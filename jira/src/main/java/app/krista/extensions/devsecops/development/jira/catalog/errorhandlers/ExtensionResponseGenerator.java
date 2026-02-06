@@ -1,0 +1,101 @@
+/*
+ * JIRA SERVICE MANAGEMENT Extension for Krista
+ * Copyright (C) 2025 Krista Software
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ */
+
+package app.krista.extensions.devsecops.development.jira.catalog.errorhandlers;
+
+import app.krista.extension.executor.ExtensionResponse;
+import app.krista.extensions.devsecops.development.jira.catalog.extresp.ExtensionResponseFactory;
+import app.krista.extensions.devsecops.development.jira.catalog.extresp.NamedFieldFactory;
+import app.krista.extensions.devsecops.development.jira.catalog.extresp.RemediationActionFactory;
+import app.krista.extensions.devsecops.development.jira.catalog.validators.ValidationOrchestrator;
+import app.krista.model.field.NamedField;
+import org.jvnet.hk2.annotations.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.StringJoiner;
+
+@Service
+public class ExtensionResponseGenerator {
+
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ExtensionResponseGenerator.class);
+    public static final String ERROR_MESSAGE = "ErrorMessage";
+    public static final String STEP_MESSAGE = "StepMessage";
+    public static final String FIELD = "Field";
+
+    public ExtensionResponse generateConfirmationResponse(
+            ExtensionResponse.Error.ExceptionType exceptionType,
+            List<ValidationOrchestrator.ValidationResult> validationResults,
+            String subCatalogRequestName,
+            Map<String, Object> state) {
+        List<NamedField> fields = List.of(NamedFieldFactory.createSwitchField("Reenter"));
+        Map<String, Object> validationResponse = generateResponse(validationResults, false);
+        return ExtensionResponseFactory.create((String) validationResponse.get(ERROR_MESSAGE), exceptionType,
+                List.of(RemediationActionFactory.createAskAction((String) validationResponse.get(STEP_MESSAGE), fields)),
+                subCatalogRequestName, state);
+    }
+
+    private Map<String, Object> generateResponse(List<ValidationOrchestrator.ValidationResult> validationResults, boolean fetchResponse) {
+        StringBuilder stepMessage = new StringBuilder();
+        StringBuilder errMessage = new StringBuilder();
+        List<NamedField> fields = new ArrayList<>();
+        for (ValidationOrchestrator.ValidationResult validationResult : validationResults) {
+            stepMessage.append(!fetchResponse ? validationResult.getConfirmStepMessage() : validationResult.getFetchStepMessage()).append("\n");
+            errMessage.append(validationResult.getErrMessage()).append("\n");
+            if (fetchResponse) {
+                fields.add(NamedFieldFactory.createTextField(validationResult.getFetchFieldName()));
+            }
+        }
+        return Map.of(STEP_MESSAGE, stepMessage.toString(), ERROR_MESSAGE, errMessage.toString(), FIELD, fields);
+    }
+
+    public ExtensionResponse generateFetchResponse(
+            ExtensionResponse.Error.ExceptionType exceptionType,
+            List<ValidationOrchestrator.ValidationResult> validationResults,
+            String subCatalogRequestName,
+            Map<String, Object> state
+    ) {
+        LOGGER.info("Validation failed for : {}", validationResults.size());
+        LOGGER.info("Validation failed for : {}", validationResults.size());
+        Map<String, Object> stringStringMap = generateResponse(validationResults, true);
+        return ExtensionResponseFactory.create((String) stringStringMap.get(ERROR_MESSAGE), exceptionType,
+                List.of(RemediationActionFactory.createAskAction((String) stringStringMap.get(STEP_MESSAGE), (List<NamedField>) stringStringMap.get(FIELD))),
+                subCatalogRequestName, state);
+    }
+
+    public ExtensionResponse generateFetchDenyResponse(
+            ExtensionResponse.Error.ExceptionType exceptionType,
+            List<ValidationOrchestrator.ValidationResult> validationResults,
+            String subCatalogRequestName,
+            Map<String, Object> state
+    ) {
+        StringJoiner stepMessage = new StringJoiner(", ", "Updated value for ", " were not provided.");
+        StringBuilder errMessage = new StringBuilder();
+        for (ValidationOrchestrator.ValidationResult validationResult : validationResults) {
+            stepMessage.add("'" + validationResult.getFetchFieldName() + "'");
+            errMessage.append(validationResult.getErrMessage()).append("\n");
+        }
+        return ExtensionResponseFactory.create(errMessage.toString(), exceptionType,
+                List.of(RemediationActionFactory.createInformActionALLParticipants(stepMessage.toString(), List.of())),
+                subCatalogRequestName, state);
+    }
+}
