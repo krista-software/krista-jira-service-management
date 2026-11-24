@@ -13,16 +13,17 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.util;
 
+import app.krista.sdk.atlassian.constants.AtlassianConstants;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
 public final class JiraConstants {
-    public static final String STATE = "state";
+    public static final String STATE = AtlassianConstants.STATE;
     public static final String STRONG = "strong";
     public static final String EM = "em";
     public static final String UNDERLINE = "underline";
@@ -35,12 +36,12 @@ public final class JiraConstants {
     private JiraConstants() {
     }
 
-    public static final Gson GSON = new Gson();
+    public static final Gson GSON = AtlassianConstants.GSON;
     public static final Gson GSON_BUILDER = new GsonBuilder().setPrettyPrinting().create();
     public static final String NA = "NA";
-    public static final String ACCEPT = "Accept";
-    public static final String X_ATLASSIAN_TOKEN = "X-Atlassian-Token";
-    public static final String NO_CHECK = "no-check";
+    public static final String ACCEPT = AtlassianConstants.ACCEPT;
+    public static final String X_ATLASSIAN_TOKEN = AtlassianConstants.X_ATLASSIAN_TOKEN;
+    public static final String NO_CHECK = AtlassianConstants.NO_CHECK;
     public static final String BUG = "Bug";
     public static final String EPIC = "Epic";
     public static final String ISSUE = "Issue";
@@ -56,10 +57,10 @@ public final class JiraConstants {
     public static final String VERSION = "Version";
     public static final String AND = " AND ";
     public static final String LOGICAL_NAME_FIELD = "logicalName";
-    public static final String REFRESH_TOKEN = "refresh_token";
-    public static final String CODE = "code";
+    public static final String REFRESH_TOKEN = AtlassianConstants.REFRESH_TOKEN;
+    public static final String CODE = AtlassianConstants.CODE;
     public static final String JAXRS_ID = "jiraextn";
-    public static final String BEARER = "Bearer ";
+    public static final String BEARER = AtlassianConstants.BEARER;
     public static final String PROJECT_KEY = "Project Key";
     public static final String SUMMARY = "Summary";
     public static final String DESCRIPTION = "Description";

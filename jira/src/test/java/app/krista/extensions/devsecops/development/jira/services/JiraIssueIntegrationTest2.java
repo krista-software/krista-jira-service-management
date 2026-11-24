@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.services;
@@ -310,6 +310,404 @@ class JiraIssueIntegrationTest2 {
         Issue issue = jiraIssue.getIssue();
 
         assertNotNull(issue.description);
+    }
+
+    @Test
+    @DisplayName("Should handle description with bulletList")
+    void testGetDescription_BulletList() {
+        JsonObject fields = new JsonObject();
+        JsonObject description = new JsonObject();
+        JsonArray content = new JsonArray();
+
+        JsonObject bulletList = new JsonObject();
+        bulletList.addProperty("type", "bulletList");
+        JsonArray listItems = new JsonArray();
+
+        JsonObject listItem = new JsonObject();
+        JsonArray itemContent = new JsonArray();
+        JsonObject paragraph = new JsonObject();
+        paragraph.addProperty("type", "paragraph");
+        JsonArray paragraphContent = new JsonArray();
+        JsonObject text = new JsonObject();
+        text.addProperty("text", "Bullet item 1");
+        paragraphContent.add(text);
+        paragraph.add("content", paragraphContent);
+        itemContent.add(paragraph);
+        listItem.add("content", itemContent);
+        listItems.add(listItem);
+
+        bulletList.add("content", listItems);
+        content.add(bulletList);
+        description.add("content", content);
+        fields.add("description", description);
+
+        JiraIssue jiraIssue = new JiraIssue("1", "TEST-1", fields, null);
+        Issue issue = jiraIssue.getIssue();
+
+        assertTrue(issue.description.contains("Bullet item 1"));
+    }
+
+    @Test
+    @DisplayName("Should handle description with heading")
+    void testGetDescription_Heading() {
+        JsonObject fields = new JsonObject();
+        JsonObject description = new JsonObject();
+        JsonArray content = new JsonArray();
+
+        JsonObject heading = new JsonObject();
+        heading.addProperty("type", "heading");
+        JsonObject headingAttrs = new JsonObject();
+        headingAttrs.addProperty("level", 2);
+        heading.add("attrs", headingAttrs);
+        JsonArray headingContent = new JsonArray();
+        JsonObject text = new JsonObject();
+        text.addProperty("text", "Section Heading");
+        headingContent.add(text);
+        heading.add("content", headingContent);
+        content.add(heading);
+        description.add("content", content);
+        fields.add("description", description);
+
+        JiraIssue jiraIssue = new JiraIssue("1", "TEST-1", fields, null);
+        Issue issue = jiraIssue.getIssue();
+
+        assertTrue(issue.description.contains("Section Heading"));
+    }
+
+    @Test
+    @DisplayName("Should not cut off content following a heading or bulletList")
+    void testGetDescription_HeadingBulletListParagraph_NotCutOff() {
+        JsonObject fields = new JsonObject();
+        JsonObject description = new JsonObject();
+        JsonArray content = new JsonArray();
+
+        // Intro paragraph
+        JsonObject intro = new JsonObject();
+        intro.addProperty("type", "paragraph");
+        JsonArray introContent = new JsonArray();
+        JsonObject introText = new JsonObject();
+        introText.addProperty("text", "Intro paragraph");
+        introContent.add(introText);
+        intro.add("content", introContent);
+        content.add(intro);
+
+        // Heading
+        JsonObject heading = new JsonObject();
+        heading.addProperty("type", "heading");
+        JsonObject headingAttrs = new JsonObject();
+        headingAttrs.addProperty("level", 2);
+        heading.add("attrs", headingAttrs);
+        JsonArray headingContent = new JsonArray();
+        JsonObject headingText = new JsonObject();
+        headingText.addProperty("text", "Steps");
+        headingContent.add(headingText);
+        heading.add("content", headingContent);
+        content.add(heading);
+
+        // Bullet list
+        JsonObject bulletList = new JsonObject();
+        bulletList.addProperty("type", "bulletList");
+        JsonArray listItems = new JsonArray();
+        JsonObject listItem = new JsonObject();
+        JsonArray itemContent = new JsonArray();
+        JsonObject bulletParagraph = new JsonObject();
+        bulletParagraph.addProperty("type", "paragraph");
+        JsonArray bulletParagraphContent = new JsonArray();
+        JsonObject bulletText = new JsonObject();
+        bulletText.addProperty("text", "Do the first thing");
+        bulletParagraphContent.add(bulletText);
+        bulletParagraph.add("content", bulletParagraphContent);
+        itemContent.add(bulletParagraph);
+        listItem.add("content", itemContent);
+        listItems.add(listItem);
+        bulletList.add("content", listItems);
+        content.add(bulletList);
+
+        // Closing paragraph
+        JsonObject closing = new JsonObject();
+        closing.addProperty("type", "paragraph");
+        JsonArray closingContent = new JsonArray();
+        JsonObject closingText = new JsonObject();
+        closingText.addProperty("text", "Closing paragraph");
+        closingContent.add(closingText);
+        closing.add("content", closingContent);
+        content.add(closing);
+
+        description.add("content", content);
+        fields.add("description", description);
+
+        JiraIssue jiraIssue = new JiraIssue("1", "TEST-1", fields, null);
+        Issue issue = jiraIssue.getIssue();
+
+        assertTrue(issue.description.contains("Intro paragraph"));
+        assertTrue(issue.description.contains("Steps"));
+        assertTrue(issue.description.contains("Do the first thing"));
+        assertTrue(issue.description.contains("Closing paragraph"));
+    }
+
+    @Test
+    @DisplayName("Should keep bulletList items with bold text and inline email links (CS-8821)")
+    void testGetDescription_BulletListWithMarkedTextAndLinks() {
+        JsonObject fields = new JsonObject();
+        JsonObject description = new JsonObject();
+        JsonArray content = new JsonArray();
+
+        // Intro paragraph
+        JsonObject intro = new JsonObject();
+        intro.addProperty("type", "paragraph");
+        JsonArray introContent = new JsonArray();
+        JsonObject introText = new JsonObject();
+        introText.addProperty("type", "text");
+        introText.addProperty("text", "Could you please provide access for the following team members?");
+        introContent.add(introText);
+        intro.add("content", introContent);
+        content.add(intro);
+
+        // Bullet list with two members, each: bold name + separator + linked email
+        JsonObject bulletList = new JsonObject();
+        bulletList.addProperty("type", "bulletList");
+        JsonArray listItems = new JsonArray();
+        listItems.add(memberListItem("David McKay (Garg)", " – ", "testuser@abc.com"));
+        listItems.add(memberListItem("Jenny Da (Garg)", " - ", "jda@xyz.com"));
+        bulletList.add("content", listItems);
+        content.add(bulletList);
+
+        description.add("content", content);
+        fields.add("description", description);
+
+        JiraIssue jiraIssue = new JiraIssue("1", "CS-8821", fields, null);
+        Issue issue = jiraIssue.getIssue();
+
+        assertTrue(issue.description.contains("David McKay (Garg)"));
+        assertTrue(issue.description.contains("testuser@abc.com"));
+        assertTrue(issue.description.contains("Jenny Da (Garg)"));
+        assertTrue(issue.description.contains("jda@xyz.com"));
+    }
+
+    private JsonObject memberListItem(String boldName, String separator, String email) {
+        JsonObject listItem = new JsonObject();
+        JsonArray itemContent = new JsonArray();
+
+        JsonObject paragraph = new JsonObject();
+        paragraph.addProperty("type", "paragraph");
+        JsonArray paragraphContent = new JsonArray();
+
+        // Bold name text node
+        JsonObject nameNode = new JsonObject();
+        nameNode.addProperty("type", "text");
+        nameNode.addProperty("text", boldName);
+        JsonArray boldMarks = new JsonArray();
+        JsonObject strong = new JsonObject();
+        strong.addProperty("type", "strong");
+        boldMarks.add(strong);
+        nameNode.add("marks", boldMarks);
+        paragraphContent.add(nameNode);
+
+        // Separator text node
+        JsonObject separatorNode = new JsonObject();
+        separatorNode.addProperty("type", "text");
+        separatorNode.addProperty("text", separator);
+        paragraphContent.add(separatorNode);
+
+        // Linked email text node (text with a link mark)
+        JsonObject emailNode = new JsonObject();
+        emailNode.addProperty("type", "text");
+        emailNode.addProperty("text", email);
+        JsonArray linkMarks = new JsonArray();
+        JsonObject link = new JsonObject();
+        link.addProperty("type", "link");
+        JsonObject linkAttrs = new JsonObject();
+        linkAttrs.addProperty("href", "mailto:" + email);
+        link.add("attrs", linkAttrs);
+        linkMarks.add(link);
+        emailNode.add("marks", linkMarks);
+        paragraphContent.add(emailNode);
+
+        paragraph.add("content", paragraphContent);
+        itemContent.add(paragraph);
+        listItem.add("content", itemContent);
+        return listItem;
+    }
+
+    @Test
+    @DisplayName("Should keep inline text nodes of a paragraph on a single line")
+    void testGetDescription_InlineNodesJoinedOnOneLine() {
+        JsonObject fields = new JsonObject();
+        JsonObject description = new JsonObject();
+        JsonArray content = new JsonArray();
+
+        JsonObject paragraph = new JsonObject();
+        paragraph.addProperty("type", "paragraph");
+        JsonArray paragraphContent = new JsonArray();
+        paragraphContent.add(textNode("Hello "));
+        paragraphContent.add(textNode("beautiful "));
+        paragraphContent.add(textNode("world"));
+        paragraph.add("content", paragraphContent);
+        content.add(paragraph);
+        description.add("content", content);
+        fields.add("description", description);
+
+        JiraIssue jiraIssue = new JiraIssue("1", "TEST-1", fields, null);
+        Issue issue = jiraIssue.getIssue();
+
+        assertEquals("Hello beautiful world", issue.description);
+    }
+
+    @Test
+    @DisplayName("Should prefix bullet list items with a bullet marker")
+    void testGetDescription_BulletListMarker() {
+        JsonObject fields = new JsonObject();
+        JsonObject description = new JsonObject();
+        JsonArray content = new JsonArray();
+
+        JsonObject bulletList = new JsonObject();
+        bulletList.addProperty("type", "bulletList");
+        JsonArray listItems = new JsonArray();
+        listItems.add(memberListItem("David McKay (Garg)", " – ", "testuser@abc.com"));
+        listItems.add(memberListItem("Jenny Da (Garg)", " - ", "jda@xyz.com"));
+        bulletList.add("content", listItems);
+        content.add(bulletList);
+        description.add("content", content);
+        fields.add("description", description);
+
+        JiraIssue jiraIssue = new JiraIssue("1", "CS-8821", fields, null);
+        Issue issue = jiraIssue.getIssue();
+
+        assertEquals("- David McKay (Garg) – testuser@abc.com\n"
+                + "- Jenny Da (Garg) - jda@xyz.com", issue.description);
+    }
+
+    @Test
+    @DisplayName("Should prefix ordered list items with sequential number markers")
+    void testGetDescription_OrderedListMarker() {
+        JsonObject fields = new JsonObject();
+        JsonObject description = new JsonObject();
+        JsonArray content = new JsonArray();
+
+        JsonObject orderedList = new JsonObject();
+        orderedList.addProperty("type", "orderedList");
+        JsonArray listItems = new JsonArray();
+        listItems.add(simpleListItem("First"));
+        listItems.add(simpleListItem("Second"));
+        listItems.add(simpleListItem("Third"));
+        orderedList.add("content", listItems);
+        content.add(orderedList);
+        description.add("content", content);
+        fields.add("description", description);
+
+        JiraIssue jiraIssue = new JiraIssue("1", "TEST-1", fields, null);
+        Issue issue = jiraIssue.getIssue();
+
+        assertEquals("1. First\n2. Second\n3. Third", issue.description);
+    }
+
+    @Test
+    @DisplayName("Should use Jira's rendered HTML description when available (CS-8821)")
+    void testGetDescription_PrefersRenderedHtml() {
+        JsonObject fields = new JsonObject();
+        // Raw ADF is intentionally minimal to prove the rendered HTML path is used instead.
+        JsonObject adfDescription = new JsonObject();
+        JsonArray adfContent = new JsonArray();
+        JsonObject adfParagraph = new JsonObject();
+        adfParagraph.addProperty("type", "paragraph");
+        JsonArray adfParagraphContent = new JsonArray();
+        adfParagraphContent.add(textNode("raw adf fallback"));
+        adfParagraph.add("content", adfParagraphContent);
+        adfContent.add(adfParagraph);
+        adfDescription.add("content", adfContent);
+        fields.add("description", adfDescription);
+
+        JsonObject renderedFields = new JsonObject();
+        renderedFields.addProperty("description",
+                "<p>Please provide access for the following team members?</p>"
+                        + "<ul>"
+                        + "<li><p><strong>David McKay (Garg)</strong> – <a href=\"mailto:testuser@abc.com\">testuser@abc.com</a></p></li>"
+                        + "<li><p><strong>Jenny Da (Garg)</strong> – <a href=\"mailto:jda@xyz.com\">jda@xyz.com</a></p></li>"
+                        + "</ul>");
+
+        JiraIssue jiraIssue = new JiraIssue("1", "CS-8821", fields, renderedFields);
+        Issue issue = jiraIssue.getIssue();
+
+        // Rendered HTML is used (not the raw ADF), and the list/bold/link structure is preserved.
+        assertFalse(issue.description.contains("raw adf fallback"));
+        assertTrue(issue.description.contains("<ul>"));
+        assertTrue(issue.description.contains("<li>"));
+        assertTrue(issue.description.contains("<strong>David McKay (Garg)</strong>"));
+        assertTrue(issue.description.contains("<a href=\"mailto:testuser@abc.com\">testuser@abc.com</a>"));
+    }
+
+    @Test
+    @DisplayName("Should fall back to ADF parsing when rendered HTML is absent")
+    void testGetDescription_FallsBackToAdf() {
+        JsonObject fields = new JsonObject();
+        JsonObject description = new JsonObject();
+        JsonArray content = new JsonArray();
+        JsonObject paragraph = new JsonObject();
+        paragraph.addProperty("type", "paragraph");
+        JsonArray paragraphContent = new JsonArray();
+        paragraphContent.add(textNode("Fallback description"));
+        paragraph.add("content", paragraphContent);
+        content.add(paragraph);
+        description.add("content", content);
+        fields.add("description", description);
+
+        JiraIssue jiraIssue = new JiraIssue("1", "TEST-1", fields, null);
+        Issue issue = jiraIssue.getIssue();
+
+        assertEquals("Fallback description", issue.description);
+    }
+
+    @Test
+    @DisplayName("Should separate a paragraph and a following bullet list with a blank line (CS-8821 layout)")
+    void testGetDescription_ParagraphThenBulletList_BlankLineSeparated() {
+        JsonObject fields = new JsonObject();
+        JsonObject description = new JsonObject();
+        JsonArray content = new JsonArray();
+
+        JsonObject intro = new JsonObject();
+        intro.addProperty("type", "paragraph");
+        JsonArray introContent = new JsonArray();
+        introContent.add(textNode("Please provide access for the following team members?"));
+        intro.add("content", introContent);
+        content.add(intro);
+
+        JsonObject bulletList = new JsonObject();
+        bulletList.addProperty("type", "bulletList");
+        JsonArray listItems = new JsonArray();
+        listItems.add(memberListItem("David McKay (Garg)", " – ", "testuser@abc.com"));
+        listItems.add(memberListItem("Jenny Da (Garg)", " – ", "jda@xyz.com"));
+        bulletList.add("content", listItems);
+        content.add(bulletList);
+
+        description.add("content", content);
+        fields.add("description", description);
+
+        JiraIssue jiraIssue = new JiraIssue("1", "CS-8821", fields, null);
+        Issue issue = jiraIssue.getIssue();
+
+        assertEquals("Please provide access for the following team members?\n\n"
+                + "- David McKay (Garg) – testuser@abc.com\n"
+                + "- Jenny Da (Garg) – jda@xyz.com", issue.description);
+    }
+
+    private JsonObject textNode(String text) {
+        JsonObject node = new JsonObject();
+        node.addProperty("type", "text");
+        node.addProperty("text", text);
+        return node;
+    }
+
+    private JsonObject simpleListItem(String text) {
+        JsonObject listItem = new JsonObject();
+        JsonArray itemContent = new JsonArray();
+        JsonObject paragraph = new JsonObject();
+        paragraph.addProperty("type", "paragraph");
+        JsonArray paragraphContent = new JsonArray();
+        paragraphContent.add(textNode(text));
+        paragraph.add("content", paragraphContent);
+        itemContent.add(paragraph);
+        listItem.add("content", itemContent);
+        return listItem;
     }
 
     @Test

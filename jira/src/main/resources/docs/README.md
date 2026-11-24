@@ -8,6 +8,20 @@ The JIRA Service Management Extension provides comprehensive integration between
 seamless project management, issue tracking, and team collaboration workflows. This extension supports advanced features
 including JQL queries, real-time webhooks, bulk operations, and sophisticated user management capabilities.
 
+## What's New in Version 2.0.23
+
+### New Features
+
+- **SDK-Based Authentication Tab** — All authentication endpoints (auth UI, test connection, OAuth authorize, OAuth callback, save/remove tokens) are now served by `AbstractAtlassianAuthResource` from the `krista-atlassian-sdk`. The `JsmAuthUiResource` mounts at `/sdk` and delegates all logic to the SDK, eliminating per-extension boilerplate.
+
+- **Audit Tab** — New `JsmAuditResource` at `/sdk/audit` provides a credential health panel and a chronological audit event timeline. `JsmAuditService` is injected into every catalog area and silently records TRIGGERED/SUCCESS/FAILURE/AUTH_FAILURE events without interrupting requests.
+
+- **Fixed Per-User MCP Authentication** — `JiraRequestAuthenticator.buildAuthorizationUrl()` now calls `buildSecuredAuthorizationUrl()` from the SDK, producing a CSRF-protected OAuth state (`invokerId#accountId.nonce#forwardPath`). This ensures the Krista platform's `oauth/callback` handler can correctly route the Atlassian authorization code back to the extension, and prevents the per-user auth popup from silently failing.
+
+- **Unified OAuth Callback URL** — Both Quick Setup (Krista Managed) and Your Own Credentials modes use a single registered callback URL (`/extension/api/rest/v3/oauth/callback`). The Krista platform handler extracts the `forwardPath` from the OAuth state and forwards the code to the invoker-specific endpoint — no separate callback URL registration is required.
+
+---
+
 ## What's New in Version 1.0.0
 
 ### New Features
@@ -45,7 +59,10 @@ including JQL queries, real-time webhooks, bulk operations, and sophisticated us
 - **File & Attachment Management**: Upload, download, and manage file attachments
 - **Bulk Operations**: Efficient batch processing for multiple issues
 - **Release Management**: Track and analyze release progress with detailed summaries
-- **Flexible Authentication**: Support for OAuth 2.0 and API token authentication
+- **Flexible Authentication**: Support for OAuth 2.0 (Krista Managed and Your Own Credentials) and API token authentication
+- **AI Assistant**: Natural language query interface — ask questions in plain English and get results from Jira Service Management
+- **Per-User MCP Authentication**: Each AI Assistant user authorizes independently via a secure OAuth popup with CSRF-protected state
+- **Audit Visibility**: Built-in audit tab tracking credential health and all catalog request events
 - **Retry Mechanism**: Built-in error handling with user-friendly retry workflows
 
 ## Quick Start Guide
@@ -63,6 +80,10 @@ including JQL queries, real-time webhooks, bulk operations, and sophisticated us
 - [Extension Configuration](/pages/ExtensionConfiguration.md) - Complete setup and configuration guide
 - [Authentication](/pages/Authentication.md) - OAuth 2.0 and API token authentication
 - [Creating Jira App](/pages/GettingOAuth2Credentials.md) - Jira application setup for OAuth
+
+### AI Assistant
+
+- [AI Assistant](/pages/AIAssistant.md) - Natural language queries, MCP setup, and per-user OAuth
 
 ### Organization Management
 
@@ -101,10 +122,11 @@ including JQL queries, real-time webhooks, bulk operations, and sophisticated us
 - [Troubleshooting](/pages/Troubleshooting.md) - Common issues and solutions
 - [Webhook Configuration](/pages/WebhookSettings.md) - Real-time notification setup
 - [JQL Query Guide](/pages/JQLQueryGuide.md) - Jira Query Language reference
+- [Authentication](/pages/Authentication.md#audit-dashboard) - Audit tab: credential health and event timeline
 
 ## Support & Resources
 
-- **Extension Version**: 1.0.0
+- **Extension Version**: 2.0.23
 - **Jira API Version**: REST API v2/v3
 - **Java Version**: 21
 - **Gradle Version**: 8.5

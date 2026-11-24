@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.impl;
@@ -129,6 +129,26 @@ public final class UserDao {
         } catch (Exception cause) {
             return false;
         }
+    }
+
+    /**
+     * Search for a user by email or name and return the User object if found.
+     * Returns null if no user is found.
+     *
+     * @param searchQuery The email address or name to search for
+     * @return User object if found, null otherwise
+     */
+    public User getUserByEmailOrName(String searchQuery) {
+        if (searchQuery == null || searchQuery.trim().isEmpty()) {
+            return null;
+        }
+
+        List<JiraUser> users = searchUser(searchQuery.trim());
+
+        if (users.isEmpty()) {
+            return null;
+        }
+        return users.getFirst().getUser();
     }
 
 }

@@ -13,11 +13,13 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.api;
 
+import app.krista.extensions.devsecops.development.jira.mcp.JsmMcpSetupResource;
+import app.krista.sdk.atlassian.extension.authentication.AtlassianManagedCallbackResource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -44,9 +46,13 @@ class JiraApplicationIntegrationTest {
 
         // Assert
         assertNotNull(classes);
-        assertEquals(2, classes.size());
+        assertEquals(6, classes.size());
         assertTrue(classes.contains(AuthenticationResource.class));
         assertTrue(classes.contains(ListenerResource.class));
+        assertTrue(classes.contains(JsmAuthUiResource.class));
+        assertTrue(classes.contains(JsmAuditResource.class));
+        assertTrue(classes.contains(JsmMcpSetupResource.class));
+        assertTrue(classes.contains(AtlassianManagedCallbackResource.class));
     }
 
     @Test

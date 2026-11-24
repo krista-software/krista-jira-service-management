@@ -13,11 +13,12 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
 
+import app.krista.sdk.atlassian.oauth.AccessibleResource;
 import com.mashape.unirest.http.HttpResponse;
 import com.mashape.unirest.http.JsonNode;
 import org.junit.jupiter.api.BeforeEach;
@@ -99,13 +100,13 @@ class OAuth2RestClientTest {
     @DisplayName("Should get accessible resources and cache them")
     void testGetAccessibleResources_CachesResult() {
         // Arrange
-        JiraService.AccessibleResources mockResources = new JiraService.AccessibleResources(
+        AccessibleResource mockResources = new AccessibleResource(
                 "test-resource-id", List.of("scope1", "scope2"));
         when(jiraService.getAccessibleResources()).thenReturn(mockResources);
 
         // Act
-        JiraService.AccessibleResources result1 = oAuth2RestClient.getAccessibleResources();
-        JiraService.AccessibleResources result2 = oAuth2RestClient.getAccessibleResources();
+        AccessibleResource result1 = oAuth2RestClient.getAccessibleResources();
+        AccessibleResource result2 = oAuth2RestClient.getAccessibleResources();
 
         // Assert
         assertNotNull(result1);
@@ -119,12 +120,12 @@ class OAuth2RestClientTest {
     @DisplayName("Should get accessible resources with accountId and invokerId")
     void testGetAccessibleResources_WithParameters() {
         // Arrange
-        JiraService.AccessibleResources mockResources = new JiraService.AccessibleResources(
+        AccessibleResource mockResources = new AccessibleResource(
                 "test-resource-id-2", List.of("scope1", "scope2"));
         when(jiraService.getAccessibleResources("account-123", "invoker-456")).thenReturn(mockResources);
 
         // Act
-        JiraService.AccessibleResources result = oAuth2RestClient.getAccessibleResources("account-123", "invoker-456");
+        AccessibleResource result = oAuth2RestClient.getAccessibleResources("account-123", "invoker-456");
 
         // Assert
         assertNotNull(result);
@@ -136,13 +137,13 @@ class OAuth2RestClientTest {
     @DisplayName("Should cache accessible resources with parameters")
     void testGetAccessibleResources_WithParameters_CachesResult() {
         // Arrange
-        JiraService.AccessibleResources mockResources = new JiraService.AccessibleResources(
+        AccessibleResource mockResources = new AccessibleResource(
                 "test-resource-id-3", List.of("scope1", "scope2"));
         when(jiraService.getAccessibleResources("account-789", "invoker-012")).thenReturn(mockResources);
 
         // Act
-        JiraService.AccessibleResources result1 = oAuth2RestClient.getAccessibleResources("account-789", "invoker-012");
-        JiraService.AccessibleResources result2 = oAuth2RestClient.getAccessibleResources("account-789", "invoker-012");
+        AccessibleResource result1 = oAuth2RestClient.getAccessibleResources("account-789", "invoker-012");
+        AccessibleResource result2 = oAuth2RestClient.getAccessibleResources("account-789", "invoker-012");
 
         // Assert
         assertSame(result1, result2);
@@ -199,14 +200,14 @@ class OAuth2RestClientTest {
     @DisplayName("Should return Jira access token")
     void testGetJiraAccessToken_ReturnsToken() {
         // Arrange
-        when(jiraService.getJiraToken()).thenReturn("test-access-token-123");
+        when(jiraService.getToken()).thenReturn("test-access-token-123");
 
         // Act
         String result = oAuth2RestClient.getJiraAccessToken();
 
         // Assert
         assertEquals("test-access-token-123", result);
-        verify(jiraService).getJiraToken();
+        verify(jiraService).getToken();
     }
 
     @Test
@@ -226,7 +227,7 @@ class OAuth2RestClientTest {
     @DisplayName("Should call getJiraToken for each invocation")
     void testGetJiraAccessToken_CallsServiceEachTime() {
         // Arrange
-        when(jiraService.getJiraToken()).thenReturn("token1", "token2");
+        when(jiraService.getToken()).thenReturn("token1", "token2");
 
         // Act
         String result1 = oAuth2RestClient.getJiraAccessToken();
@@ -235,14 +236,14 @@ class OAuth2RestClientTest {
         // Assert
         assertEquals("token1", result1);
         assertEquals("token2", result2);
-        verify(jiraService, times(2)).getJiraToken();
+        verify(jiraService, times(2)).getToken();
     }
 
     @Test
     @DisplayName("Should return null when fetch encounters exception")
     void testFetch_ReturnsNull_OnException() {
         // Arrange
-        JiraService.AccessibleResources mockResources = new JiraService.AccessibleResources(
+        AccessibleResource mockResources = new AccessibleResource(
                 "test-resource-id", List.of("scope1"));
         when(jiraService.getAccessibleResources()).thenReturn(mockResources);
         when(jiraService.getJiraToken()).thenReturn("test-token");
@@ -277,10 +278,10 @@ class OAuth2RestClientTest {
     @DisplayName("Should use correct query parameters in getResourceInvoker")
     void testGetResourceInvoker_UsesQueryParams() {
         // Arrange
-        JiraService.AccessibleResources mockResources = new JiraService.AccessibleResources(
+        AccessibleResource mockResources = new AccessibleResource(
                 "test-resource-id", List.of("scope1"));
         when(jiraService.getAccessibleResources()).thenReturn(mockResources);
-        when(jiraService.getJiraToken()).thenReturn("test-token");
+        when(jiraService.getToken()).thenReturn("test-token");
 
         Map<String, Object> queryParams = new HashMap<>();
         queryParams.put("maxResults", 50);
@@ -307,7 +308,7 @@ class OAuth2RestClientTest {
 
             // Assert
             assertNotNull(result);
-            verify(jiraService).getJiraToken();
+            verify(jiraService).getToken();
             verify(jiraService).getAccessibleResources();
         }
     }
@@ -316,10 +317,10 @@ class OAuth2RestClientTest {
     @DisplayName("Should use correct query parameters in getJiraServiceResourceInvoker")
     void testGetJiraServiceResourceInvoker_UsesQueryParams() {
         // Arrange
-        JiraService.AccessibleResources mockResources = new JiraService.AccessibleResources(
+        AccessibleResource mockResources = new AccessibleResource(
                 "test-resource-id", List.of("scope1"));
         when(jiraService.getAccessibleResources()).thenReturn(mockResources);
-        when(jiraService.getJiraToken()).thenReturn("test-token");
+        when(jiraService.getToken()).thenReturn("test-token");
 
         Map<String, Object> queryParams = new HashMap<>();
         queryParams.put("limit", 10);
@@ -344,7 +345,7 @@ class OAuth2RestClientTest {
 
             // Assert
             assertNotNull(result);
-            verify(jiraService).getJiraToken();
+            verify(jiraService).getToken();
             verify(jiraService).getAccessibleResources();
         }
     }

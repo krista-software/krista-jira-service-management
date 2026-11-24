@@ -21,17 +21,21 @@ Navigate to the webhook settings in your Jira instance. You can do this in two w
 
 On the webhook settings page, create a new webhook:
 
+- **Set the Name of Webhook URL:**
+    - ![Webhook_Name](../_media/WebhookName.png)
 - **Set the Webhook URL:**
     - Provide the URL where Jira will send notifications. Use the format: `Extension Base URL + "jiraextn/jirawebhook"`.
       Replace `Extension Base URL` with the base URL of your extension. ![Routing Id](../_media/routing_id.png)
 - **Configure Webhook Events and Filters:**
     - Choose the events that will trigger the webhook, such as `jira:issue_created`, `jira:issue_updated`.
-    - Optionally, set filters using JQL (Jira Query Language) to specify conditions under which the webhook should
-      trigger. Example: **"Project = 'Demo Project'"**.
+        - Optionally, set filters using JQL (Jira Query Language) to specify conditions under which the webhook should
+          trigger. Example: **"Project = 'Demo Project'"**.
+    - ![JQL_Query](../_media/event_trigger.png)
 - **Other Settings:**
     - Configure additional settings as needed for your specific requirements.
 
 ## Step 4: Save the Webhook Configuration
+- ![Save_Webhook_URL](../_media/save_webhook_url.png)
 
 After setting up the URL, events, and filters, save the webhook configuration.
 
@@ -45,3 +49,11 @@ conversation. ![Get Notification](../_media/getNotification.png)
 
 This process enables you to receive notifications tailored to your specific webhook configuration. Each notification
 reflects the events and criteria defined in your webhook setup.
+
+## Note
+
+**Authentication Compatibility:** This webhook URL configuration works with both authentication methods:
+- **Basic Authentication** (username and API token)
+- **OAuth 2.0** (client credentials)
+
+The webhook endpoint itself does not require authentication. However, if your conversation workflow makes subsequent API calls to Jira after receiving the webhook notification, those calls will use the configured authentication method.

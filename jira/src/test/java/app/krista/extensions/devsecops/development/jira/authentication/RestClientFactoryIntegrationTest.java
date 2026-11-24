@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
@@ -86,6 +86,7 @@ class RestClientFactoryIntegrationTest {
     @DisplayName("Should create OAuth2RestClient when basic credentials not present")
     void testGetInstanceOAuth2RestClient() {
         when(mockJiraAttributes.areBasicCredentialsPresent()).thenReturn(false);
+        when(mockJiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(mockRequestContext.invokeAsUser()).thenReturn(false);
 
         RestClient client = factory.getInstance();
@@ -95,7 +96,7 @@ class RestClientFactoryIntegrationTest {
     }
 
     @Test
-    @DisplayName("Should create OAuth2RestClient when invokeAsUser is true")
+    @DisplayName("Should create AuthRestClient when basic credentials present, even when invokeAsUser is true (corrected selection rule)")
     void testGetInstanceOAuth2WhenInvokeAsUser() {
         when(mockJiraAttributes.areBasicCredentialsPresent()).thenReturn(true);
         when(mockRequestContext.invokeAsUser()).thenReturn(true);
@@ -103,7 +104,7 @@ class RestClientFactoryIntegrationTest {
         RestClient client = factory.getInstance();
 
         assertNotNull(client);
-        assertSame(mockOAuth2RestClient, client);
+        assertTrue(client instanceof AuthRestClient);
     }
 
     @Test
@@ -118,14 +119,14 @@ class RestClientFactoryIntegrationTest {
     }
 
     @Test
-    @DisplayName("Should create OAuth2RestClient when explicitly passing true for invokeAsUser")
+    @DisplayName("Should create AuthRestClient when basic credentials present and explicitly passing true for invokeAsUser (corrected selection rule)")
     void testGetInstanceWithExplicitTrue() {
         when(mockJiraAttributes.areBasicCredentialsPresent()).thenReturn(true);
 
         RestClient client = factory.getInstance(true);
 
         assertNotNull(client);
-        assertSame(mockOAuth2RestClient, client);
+        assertTrue(client instanceof AuthRestClient);
     }
 
     @Test

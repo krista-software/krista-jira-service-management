@@ -7,6 +7,9 @@
     * [Authentication](/pages/Authentication.md)
     * [Troubleshooting](/pages/Troubleshooting.md)
 
+* **AI Assistant**
+    * [AI Assistant](/pages/AIAssistant.md)
+
 * **Organization Management**
     * [Attach File to Ticket](/pages/AttachFileToTicket.md)
     * [Create an Issue](/pages/CreateAnIssue.md)

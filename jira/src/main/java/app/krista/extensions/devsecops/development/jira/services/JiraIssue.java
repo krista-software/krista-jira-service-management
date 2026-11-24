@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.services;
@@ -23,13 +23,18 @@ import app.krista.extensions.devsecops.development.jira.util.JiraConstants;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import org.jsoup.Jsoup;
+import org.jsoup.safety.Safelist;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -38,12 +43,23 @@ public final class JiraIssue {
     public static final String FIELDS = "fields";
     public static final String KEY = "key";
     public static final String ID = "id";
+    public static final String UPDATED = "updated";
     public final String id;
     public final String key;
     public final Object fields;
     public final Object renderedFields;
 
     private final Logger LOGGER = LoggerFactory.getLogger(JiraIssue.class);
+
+    /**
+     * DateTimeFormatter that handles Jira's date format variations.
+     * Supports both standard ISO 8601 formats and Jira's non-standard timezone offsets.
+     * Examples: "2026-02-12T11:19:51.462+05:30", "2026-02-12T11:19:51.462+0530", "2026-02-12T11:19:51.462Z"
+     */
+    private static final DateTimeFormatter JIRA_DATE_FORMATTER = new DateTimeFormatterBuilder()
+            .append(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+            .appendPattern("[.SSS][Z][XXX][XX]")
+            .toFormatter();
 
     public JiraIssue(String id, String key, Object fields, Object renderedFields) {
         this.id = id;
@@ -79,7 +95,10 @@ public final class JiraIssue {
             issue.labels = getLabels();
             issue.components = getComponents();
             issue.requestType = getRequestType();
-        } catch (Exception ignored) {
+            issue.lastModifiedDate = getLastModifiedDate();
+            LOGGER.debug("Issue object populated - Key: {}, Last Modified Date: {}", issue.key, issue.lastModifiedDate);
+        } catch (Exception e) {
+            LOGGER.error("Error populating issue object for key {}: {}", key, e.getMessage(), e);
             return issue;
         }
         return issue;
@@ -155,27 +174,58 @@ public final class JiraIssue {
     }
 
     /**
-     * Extracts the description text from the JSON object fields and returns it as a
-     * concatenated string.
-     * If an error occurs during the extraction process, an empty string is
-     * returned.
+     * Extracts the issue description as HTML.
      *
-     * @return The description text extracted from the JSON object fields, or an
-     * empty string if an error occurs.
+     * <p>The {@code Description} entity field is a {@code RichText} (HTML) field, so the
+     * description is taken from Jira's own rendered HTML ({@code renderedFields.description},
+     * returned via {@code expand=renderedFields}) and returned as sanitized HTML. Because Jira
+     * renders the Atlassian Document Format itself, the original layout — paragraphs, bullet /
+     * ordered lists, bold, links, headings, tables — is preserved faithfully and renders
+     * natively in the RichText field instead of appearing as literal markup on one collapsed
+     * line. Falls back to parsing the ADF document directly when the rendered HTML is
+     * unavailable (e.g. it was not requested).
+     *
+     * @return The description as HTML, or an empty string if none is available or an error
+     * occurs.
      */
     private String getDescription() {
-        StringBuilder descriptionBuilder = new StringBuilder();
         try {
-            JsonObject descriptionObject = getDescriptionObject();
-            if (descriptionObject != null) {
-                JsonArray contentArray = descriptionObject.getAsJsonArray(JiraConstants.CONTENT);
-                if (contentArray != null) {
-                    processContentArray(contentArray, descriptionBuilder);
+            String renderedHtml = getRenderedDescriptionHtml();
+            LOGGER.info("Rendered description HTML received for issue {}: {}", key, renderedHtml);
+            if (renderedHtml != null && !renderedHtml.isBlank()) {
+                String sanitized = Jsoup.clean(renderedHtml, Safelist.relaxed()).trim();
+                LOGGER.info("Sanitized description HTML for issue {}: {}", key, sanitized);
+                if (!sanitized.isBlank()) {
+                    return sanitized;
                 }
             }
+            LOGGER.info("No rendered HTML description for issue {}; falling back to ADF parsing", key);
+            return getDescriptionFromAdf();
         } catch (Exception cause) {
             LOGGER.debug("Error in getDescription method: {}", cause);
             return "";
+        }
+    }
+
+    private String getRenderedDescriptionHtml() {
+        if (this.renderedFields instanceof JsonElement rendered && rendered.isJsonObject()) {
+            JsonObject renderedObject = rendered.getAsJsonObject();
+            if (renderedObject.has(JiraConstants._DESCRIPTION)
+                    && !renderedObject.get(JiraConstants._DESCRIPTION).isJsonNull()) {
+                return renderedObject.get(JiraConstants._DESCRIPTION).getAsString();
+            }
+        }
+        return null;
+    }
+
+    private String getDescriptionFromAdf() {
+        StringBuilder descriptionBuilder = new StringBuilder();
+        JsonObject descriptionObject = getDescriptionObject();
+        if (descriptionObject != null) {
+            JsonArray contentArray = descriptionObject.getAsJsonArray(JiraConstants.CONTENT);
+            if (contentArray != null) {
+                processContentArray(contentArray, descriptionBuilder);
+            }
         }
         return descriptionBuilder.toString().trim();
     }
@@ -194,22 +244,49 @@ public final class JiraIssue {
             String type = contentObject.get(JiraConstants._TYPE).getAsString();
 
             if (!type.equals("mediaSingle") && contentObject.has(JiraConstants.CONTENT)) {
-                processContentObject(contentObject, type, descriptionBuilder);
+                StringBuilder block = new StringBuilder();
+                processContentObject(contentObject, type, block);
+                appendBlock(block.toString(), descriptionBuilder);
             }
         }
+    }
+
+    /**
+     * Appends a rendered top-level block, separating it from the previous block with a blank
+     * line. The blank line is required so that renderers which collapse a single newline into
+     * a space (e.g. Markdown/HTML) still show paragraphs and lists on their own lines and
+     * render bullet/ordered lists as lists rather than one run-on paragraph.
+     */
+    private void appendBlock(String blockText, StringBuilder descriptionBuilder) {
+        int end = blockText.length();
+        while (end > 0 && blockText.charAt(end - 1) == '\n') {
+            end--;
+        }
+        blockText = blockText.substring(0, end);
+        if (blockText.isEmpty()) {
+            return;
+        }
+        if (descriptionBuilder.length() > 0) {
+            descriptionBuilder.append("\n\n");
+        }
+        descriptionBuilder.append(blockText);
     }
 
     private void processContentObject(JsonObject contentObject, String type, StringBuilder descriptionBuilder) {
         JsonArray content = contentObject.getAsJsonArray(JiraConstants.CONTENT);
         switch (type) {
             case "paragraph":
+            case "heading":
             case "codeBlock":
             case "blockquote":
             case "expand":
                 appendParagraphs(content, descriptionBuilder);
                 break;
             case "orderedList":
-                appendOrderedList(content, descriptionBuilder);
+                appendList(content, descriptionBuilder, true);
+                break;
+            case "bulletList":
+                appendList(content, descriptionBuilder, false);
                 break;
             case "table":
                 descriptionBuilder.append(createJiraTableToCSV(content)).append("\n");
@@ -219,80 +296,91 @@ public final class JiraIssue {
         }
     }
 
+    /**
+     * Renders one block (paragraph, heading, codeBlock, blockquote, expand) as a single
+     * line. Inline nodes within the block are concatenated so that formatting spread across
+     * multiple text nodes (e.g. bold name + separator + linked email) stays on one line, and
+     * a single newline is appended at the block boundary.
+     */
     private void appendParagraphs(JsonArray paragraphContentArray, StringBuilder descriptionBuilder) {
-        for (int k = 0; k < paragraphContentArray.size(); k++) {
-            JsonObject paragraphContentObject = paragraphContentArray.get(k).getAsJsonObject();
-            if (paragraphContentObject.has(JiraConstants.TEXT)) {
-                descriptionBuilder.append(paragraphContentObject.get(JiraConstants.TEXT).getAsString()).append("\n");
-            } else if (paragraphContentObject.has(JiraConstants._TYPE)) {
-                appendByType(paragraphContentObject, descriptionBuilder);
-            }
+        String line = renderInline(paragraphContentArray);
+        if (line.isEmpty()) {
+            return;
+        }
+        descriptionBuilder.append(line);
+        if (line.charAt(line.length() - 1) != '\n') {
+            descriptionBuilder.append("\n");
         }
     }
 
-    private void appendByType(JsonObject paragraphContentObject, StringBuilder descriptionBuilder) {
-        String type = paragraphContentObject.get(JiraConstants._TYPE).getAsString();
+    /**
+     * Concatenates the inline content of a block into a single string without inserting a
+     * newline between sibling inline nodes. Nested block-level paragraphs (e.g. inside a
+     * blockquote or expand) are rendered on their own line.
+     */
+    private String renderInline(JsonArray inlineNodes) {
+        StringBuilder line = new StringBuilder();
+        for (int k = 0; k < inlineNodes.size(); k++) {
+            JsonObject node = inlineNodes.get(k).getAsJsonObject();
+            if (node.has(JiraConstants.TEXT)) {
+                line.append(node.get(JiraConstants.TEXT).getAsString());
+            } else if (node.has(JiraConstants._TYPE)) {
+                appendInlineByType(node, line);
+            }
+        }
+        return line.toString();
+    }
+
+    private void appendInlineByType(JsonObject node, StringBuilder line) {
+        String type = node.get(JiraConstants._TYPE).getAsString();
         switch (type) {
             case "mention":
             case "status":
-                appendMentionOrStatus(paragraphContentObject, descriptionBuilder);
-                break;
-            case "paragraph":
-                appendParagraph(paragraphContentObject, descriptionBuilder);
+                line.append(node.getAsJsonObject(JiraConstants.ATTRS).get(JiraConstants.TEXT).getAsString());
                 break;
             case "inlineCard":
             case "blockCard":
-                appendCard(paragraphContentObject, descriptionBuilder);
+                line.append(node.getAsJsonObject(JiraConstants.ATTRS).get("url").getAsString());
                 break;
             case "date":
-                appendDate(paragraphContentObject, descriptionBuilder);
+                String timestamp = node.getAsJsonObject(JiraConstants.ATTRS).get("timestamp").getAsString();
+                line.append(convertTimestampToDate(Long.parseLong(timestamp)));
+                break;
+            case "paragraph":
+                if (node.has(JiraConstants.CONTENT)
+                        && !node.getAsJsonArray(JiraConstants.CONTENT).isJsonNull()
+                        && !node.getAsJsonArray(JiraConstants.CONTENT).isEmpty()) {
+                    line.append(renderInline(node.getAsJsonArray(JiraConstants.CONTENT))).append("\n");
+                }
                 break;
             default:
                 break;
         }
     }
 
-    private void appendMentionOrStatus(JsonObject paragraphContentObject, StringBuilder descriptionBuilder) {
-        descriptionBuilder.append(
-                        paragraphContentObject.getAsJsonObject(JiraConstants.ATTRS).get(JiraConstants.TEXT).getAsString())
-                .append("\n");
-    }
-
-    private void appendParagraph(JsonObject paragraphContentObject, StringBuilder descriptionBuilder) {
-        String text = "";
-        if (paragraphContentObject.has(JiraConstants.CONTENT)
-                && !paragraphContentObject.getAsJsonArray(JiraConstants.CONTENT).isJsonNull()
-                && !paragraphContentObject.getAsJsonArray(JiraConstants.CONTENT).isEmpty()) {
-            text = paragraphContentObject.getAsJsonArray(JiraConstants.CONTENT).get(0).getAsJsonObject()
-                    .get(JiraConstants.TEXT).getAsString();
-        }
-        descriptionBuilder.append(text).append("\n");
-    }
-
-    private void appendCard(JsonObject paragraphContentObject, StringBuilder descriptionBuilder) {
-        descriptionBuilder.append(paragraphContentObject.getAsJsonObject(JiraConstants.ATTRS).get("url").getAsString())
-                .append("\n");
-    }
-
-    private void appendDate(JsonObject paragraphContentObject, StringBuilder descriptionBuilder) {
-        String timestamp = paragraphContentObject.getAsJsonObject(JiraConstants.ATTRS).get("timestamp").getAsString();
-        descriptionBuilder.append(convertTimestampToDate(Long.parseLong(timestamp))).append("\n");
-    }
-
-    private void appendOrderedList(JsonArray orderedListItems, StringBuilder descriptionBuilder) {
-        for (int l = 0; l < orderedListItems.size(); l++) {
-            JsonObject listItem = orderedListItems.get(l).getAsJsonObject();
-            if (listItem.has(JiraConstants.CONTENT)) {
-                JsonArray listItemContent = listItem.getAsJsonArray(JiraConstants.CONTENT);
-                for (int m = 0; m < listItemContent.size(); m++) {
-                    JsonObject listItemContentObject = listItemContent.get(m).getAsJsonObject();
-                    if (listItemContentObject.has(JiraConstants._TYPE)
-                            && listItemContentObject.get(JiraConstants._TYPE).getAsString().equals("paragraph")) {
-                        appendParagraphs(listItemContentObject.getAsJsonArray(JiraConstants.CONTENT),
-                                descriptionBuilder);
-                    }
+    /**
+     * Renders an ordered or bullet list, prefixing each item with its marker ("1. ", "2. ", …
+     * for ordered lists, "- " for bullet lists) so the list structure is preserved in the
+     * extracted description.
+     */
+    private void appendList(JsonArray listItems, StringBuilder descriptionBuilder, boolean ordered) {
+        int number = 1;
+        for (int l = 0; l < listItems.size(); l++) {
+            JsonObject listItem = listItems.get(l).getAsJsonObject();
+            if (!listItem.has(JiraConstants.CONTENT)) {
+                continue;
+            }
+            String marker = ordered ? (number + ". ") : "- ";
+            JsonArray listItemContent = listItem.getAsJsonArray(JiraConstants.CONTENT);
+            for (int m = 0; m < listItemContent.size(); m++) {
+                JsonObject listItemContentObject = listItemContent.get(m).getAsJsonObject();
+                if (listItemContentObject.has(JiraConstants._TYPE)
+                        && listItemContentObject.get(JiraConstants._TYPE).getAsString().equals("paragraph")) {
+                    String line = renderInline(listItemContentObject.getAsJsonArray(JiraConstants.CONTENT));
+                    descriptionBuilder.append(marker).append(line).append("\n");
                 }
             }
+            number++;
         }
     }
 
@@ -343,6 +431,68 @@ public final class JiraIssue {
         LocalDate date = instant.atZone(ZoneId.systemDefault()).toLocalDate();
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd MMM yyyy");
         return date.format(formatter);
+    }
+
+    /**
+     * Extracts the last modified date from Jira issue fields.
+     * <p>
+     * This method retrieves the 'updated' field from the Jira API response and converts it
+     * to epoch milliseconds for use with @Field.Date annotation.
+     * </p>
+     * <p>
+     * Handles various Jira date formats including:
+     * <ul>
+     *   <li>"2026-02-12T11:19:51.462+05:30" (standard ISO 8601)</li>
+     *   <li>"2026-02-12T11:19:51.462+0530" (Jira's non-standard format without colon)</li>
+     *   <li>"2026-02-12T11:19:51.462Z" (UTC/Zulu time)</li>
+     * </ul>
+     * </p>
+     *
+     * @return The last modified date as epoch milliseconds (Long), or null if:
+     *         <ul>
+     *           <li>fields object is null</li>
+     *           <li>'updated' field is not present in the response</li>
+     *           <li>'updated' field value is null</li>
+     *           <li>date parsing fails</li>
+     *         </ul>
+     */
+    private Long getLastModifiedDate() {
+        if (this.fields == null) {
+            LOGGER.warn("Fields object is null, cannot extract Last Modified Date");
+            return null;
+        }
+
+        JsonObject fieldsObj = (JsonObject) this.fields;
+        if (!fieldsObj.has(UPDATED)) {
+            LOGGER.warn("'updated' field not found in Jira response");
+            return null;
+        }
+
+        JsonElement updatedElement = fieldsObj.get(UPDATED);
+        if (updatedElement == null || updatedElement.isJsonNull()) {
+            LOGGER.warn("'updated' field is null in Jira response");
+            return null;
+        }
+
+        try {
+            String updatedStr = updatedElement.getAsString();
+            LOGGER.trace("Parsing Last Modified Date from Jira API: {}", updatedStr);
+
+            // Use robust DateTimeFormatter that handles timezone variations
+            OffsetDateTime offsetDateTime = OffsetDateTime.parse(updatedStr, JIRA_DATE_FORMATTER);
+            Long epochMilli = offsetDateTime.toInstant().toEpochMilli();
+
+            LOGGER.debug("Successfully parsed Last Modified Date: {} -> epoch: {}", updatedStr, epochMilli);
+            return epochMilli;
+        } catch (DateTimeParseException e) {
+            LOGGER.error("Failed to parse Last Modified Date. Invalid date format: {}",
+                    updatedElement.getAsString(), e);
+            return null;
+        } catch (IllegalStateException | UnsupportedOperationException e) {
+            LOGGER.error("Failed to extract Last Modified Date. Invalid JSON element type: {}",
+                    updatedElement, e);
+            return null;
+        }
     }
 
     private String getPriority() {

@@ -13,15 +13,15 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.catalog.errorhandlers;
 
 import app.krista.extension.executor.ExtensionResponse;
-import app.krista.extensions.devsecops.development.jira.catalog.extresp.ExtensionResponseFactory;
-import app.krista.extensions.devsecops.development.jira.catalog.extresp.NamedFieldFactory;
-import app.krista.extensions.devsecops.development.jira.catalog.extresp.RemediationActionFactory;
+import app.krista.sdk.atlassian.extresp.ExtensionResponseFactory;
+import app.krista.sdk.atlassian.extresp.NamedFieldFactory;
+import app.krista.sdk.atlassian.extresp.RemediationActionFactory;
 import app.krista.extensions.devsecops.development.jira.catalog.validators.ValidationOrchestrator;
 import app.krista.model.field.NamedField;
 import org.jvnet.hk2.annotations.Service;

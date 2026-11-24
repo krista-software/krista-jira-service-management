@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.catalog.entityrequests;
@@ -33,7 +33,7 @@ import app.krista.model.entity.EntityType;
 import java.util.List;
 import java.util.Map;
 
-import static app.krista.extensions.devsecops.development.jira.impl.JQLBuilder.removeEndsWith;
+import static app.krista.sdk.atlassian.jql.JQLBuilder.removeEndsWith;
 
 public abstract class EntityImplementationService {
 

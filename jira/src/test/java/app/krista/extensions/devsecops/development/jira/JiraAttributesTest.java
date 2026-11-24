@@ -13,13 +13,17 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira;
 
 import app.krista.extension.authorization.MustAuthorizeException;
 import app.krista.extension.executor.Invoker;
+import app.krista.extension.request.RoutingInfo;
+import app.krista.extension.request.protos.http.HttpProtocol;
+import app.krista.extensions.devsecops.development.jira.authentication.AuthRestClient;
+import app.krista.extensions.devsecops.development.jira.authentication.RestClient;
 import app.krista.extensions.devsecops.development.jira.util.SessionManager;
 import app.krista.ksdk.context.AuthorizationContext;
 import app.krista.ksdk.context.RequestContext;
@@ -29,8 +33,11 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.MockedConstruction;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -176,6 +183,9 @@ class JiraAttributesTest {
             nullAttributes.put(JiraAttributes.CLIENT_ID, null);
             nullAttributes.put(JiraAttributes.CLIENT_SECRET, null);
 
+            // Also update invoker mock to simulate real-world scenario where
+            // invoker's live map reflects current state
+            when(invoker.getAttributes()).thenReturn(nullAttributes);
             jiraAttributes.setAttributes(nullAttributes);
 
             assertNull(jiraAttributes.getHostUrl());
@@ -445,6 +455,7 @@ class JiraAttributesTest {
             attributes.put(JiraAttributes.USER_NAME, null);
             attributes.put(JiraAttributes.AUTH_TOKEN, "test_token");
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areBasicCredentialsPresent());
@@ -458,6 +469,7 @@ class JiraAttributesTest {
             attributes.put(JiraAttributes.USER_NAME, "   ");
             attributes.put(JiraAttributes.AUTH_TOKEN, "test_token");
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areBasicCredentialsPresent());
@@ -471,6 +483,7 @@ class JiraAttributesTest {
             attributes.put(JiraAttributes.USER_NAME, "test@example.com");
             attributes.put(JiraAttributes.AUTH_TOKEN, null);
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areBasicCredentialsPresent());
@@ -484,6 +497,7 @@ class JiraAttributesTest {
             attributes.put(JiraAttributes.USER_NAME, "test@example.com");
             attributes.put(JiraAttributes.AUTH_TOKEN, "");
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areBasicCredentialsPresent());
@@ -497,6 +511,7 @@ class JiraAttributesTest {
             attributes.put(JiraAttributes.USER_NAME, "test@example.com");
             attributes.put(JiraAttributes.AUTH_TOKEN, "test_token");
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areBasicCredentialsPresent());
@@ -510,6 +525,7 @@ class JiraAttributesTest {
             attributes.put(JiraAttributes.USER_NAME, "test@example.com");
             attributes.put(JiraAttributes.AUTH_TOKEN, "test_token");
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areBasicCredentialsPresent());
@@ -538,7 +554,9 @@ class JiraAttributesTest {
             Map<String, Object> attributes = new HashMap<>();
             attributes.put(JiraAttributes.CLIENT_ID, null);
             attributes.put(JiraAttributes.CLIENT_SECRET, "client_secret");
+            attributes.put(JiraAttributes.CREDENTIALS_MODE, "own");
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areOAuthCredentialsPresent());
@@ -550,7 +568,9 @@ class JiraAttributesTest {
             Map<String, Object> attributes = new HashMap<>();
             attributes.put(JiraAttributes.CLIENT_ID, "");
             attributes.put(JiraAttributes.CLIENT_SECRET, "client_secret");
+            attributes.put(JiraAttributes.CREDENTIALS_MODE, "own");
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areOAuthCredentialsPresent());
@@ -562,7 +582,9 @@ class JiraAttributesTest {
             Map<String, Object> attributes = new HashMap<>();
             attributes.put(JiraAttributes.CLIENT_ID, "client_id");
             attributes.put(JiraAttributes.CLIENT_SECRET, null);
+            attributes.put(JiraAttributes.CREDENTIALS_MODE, "own");
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areOAuthCredentialsPresent());
@@ -574,7 +596,9 @@ class JiraAttributesTest {
             Map<String, Object> attributes = new HashMap<>();
             attributes.put(JiraAttributes.CLIENT_ID, "client_id");
             attributes.put(JiraAttributes.CLIENT_SECRET, "   ");
+            attributes.put(JiraAttributes.CREDENTIALS_MODE, "own");
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areOAuthCredentialsPresent());
@@ -586,7 +610,9 @@ class JiraAttributesTest {
             Map<String, Object> attributes = new HashMap<>();
             attributes.put(JiraAttributes.CLIENT_ID, null);
             attributes.put(JiraAttributes.CLIENT_SECRET, null);
+            attributes.put(JiraAttributes.CREDENTIALS_MODE, "own");
 
+            when(invoker.getAttributes()).thenReturn(attributes);
             jiraAttributes.setAttributes(attributes);
 
             assertFalse(jiraAttributes.areOAuthCredentialsPresent());
@@ -626,6 +652,8 @@ class JiraAttributesTest {
             updateAttributes.put(JiraAttributes.HOST_URL, null);
             updateAttributes.put(JiraAttributes.AUTH_TOKEN, null);
 
+            // Also update invoker mock so getters don't fall back to old values
+            when(invoker.getAttributes()).thenReturn(updateAttributes);
             jiraAttributes.update(updateAttributes);
 
             assertNull(jiraAttributes.getClientId());
@@ -645,6 +673,8 @@ class JiraAttributesTest {
             initialAttributes.put(JiraAttributes.CLIENT_ID, "initial_client_id");
             jiraAttributes.setAttributes(initialAttributes);
 
+            // Update invoker mock to return empty map so getters don't fall back to old values
+            when(invoker.getAttributes()).thenReturn(updateAttributes);
             // Update with empty map
             jiraAttributes.update(updateAttributes);
 
@@ -667,10 +697,9 @@ class JiraAttributesTest {
                 () -> jiraAttributes.validateAttributes(attributes)
             );
 
-            assertEquals(
-                "Either (Auth token, user name, host url) or (Client ID, Client secret) must be provided for authentication",
-                exception.getMessage()
-            );
+            assertTrue(exception.getMessage().contains("Please choose ONE authentication method"));
+            assertTrue(exception.getMessage().contains("For OAuth 2.0: Provide Client Id and Client Secret"));
+            assertTrue(exception.getMessage().contains("For Basic Auth: Provide Admin Auth Token, Admin User Name, and Host Url"));
         }
 
         @Test
@@ -689,6 +718,96 @@ class JiraAttributesTest {
             );
 
             assertEquals("User name is not a valid email address", exception.getMessage());
+        }
+
+        @Test
+        @DisplayName("Should throw exception when both OAuth and Basic Auth credentials provided")
+        void testValidateAttributes_MixedCredentials_AllFields() {
+            Map<String, Object> attributes = new HashMap<>();
+            // OAuth credentials
+            attributes.put(JiraAttributes.CLIENT_ID, "test_client_id");
+            attributes.put(JiraAttributes.CLIENT_SECRET, "a".repeat(64));
+            // Basic Auth credentials
+            attributes.put(JiraAttributes.AUTH_TOKEN, "test_token");
+            attributes.put(JiraAttributes.USER_NAME, "test@example.com");
+            attributes.put(JiraAttributes.HOST_URL, "https://test.atlassian.net");
+
+            IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> jiraAttributes.validateAttributes(attributes)
+            );
+
+            assertTrue(exception.getMessage().contains("Please choose ONE authentication method"));
+            assertTrue(exception.getMessage().contains("Do not mix credentials from both authentication methods"));
+        }
+
+        @Test
+        @DisplayName("Should throw exception when OAuth credentials mixed with partial Basic Auth")
+        void testValidateAttributes_MixedCredentials_OAuthPlusPartialBasic() {
+            Map<String, Object> attributes = new HashMap<>();
+            // Complete OAuth credentials
+            attributes.put(JiraAttributes.CLIENT_ID, "test_client_id");
+            attributes.put(JiraAttributes.CLIENT_SECRET, "a".repeat(64));
+            // Partial Basic Auth (only Auth Token)
+            attributes.put(JiraAttributes.AUTH_TOKEN, "test_token");
+
+            IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> jiraAttributes.validateAttributes(attributes)
+            );
+
+            assertTrue(exception.getMessage().contains("Please choose ONE authentication method"));
+            assertTrue(exception.getMessage().contains("remove Admin Auth Token, Admin User Name, Host Url"));
+        }
+
+        @Test
+        @DisplayName("Should throw exception when Basic Auth credentials mixed with partial OAuth")
+        void testValidateAttributes_MixedCredentials_BasicPlusPartialOAuth() {
+            Map<String, Object> attributes = new HashMap<>();
+            // Complete Basic Auth credentials
+            attributes.put(JiraAttributes.AUTH_TOKEN, "test_token");
+            attributes.put(JiraAttributes.USER_NAME, "test@example.com");
+            attributes.put(JiraAttributes.HOST_URL, "https://test.atlassian.net");
+            // Partial OAuth (only Client ID)
+            attributes.put(JiraAttributes.CLIENT_ID, "test_client_id");
+
+            IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> jiraAttributes.validateAttributes(attributes)
+            );
+
+            assertTrue(exception.getMessage().contains("Please choose ONE authentication method"));
+            assertTrue(exception.getMessage().contains("remove Client Id, Client Secret"));
+        }
+
+        @Test
+        @DisplayName("Should throw exception when only Client ID and Auth Token provided")
+        void testValidateAttributes_MixedCredentials_ClientIdAndAuthToken() {
+            Map<String, Object> attributes = new HashMap<>();
+            attributes.put(JiraAttributes.CLIENT_ID, "test_client_id");
+            attributes.put(JiraAttributes.AUTH_TOKEN, "test_token");
+
+            IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> jiraAttributes.validateAttributes(attributes)
+            );
+
+            assertTrue(exception.getMessage().contains("Please choose ONE authentication method"));
+        }
+
+        @Test
+        @DisplayName("Should throw exception when only Client Secret and User Name provided")
+        void testValidateAttributes_MixedCredentials_ClientSecretAndUserName() {
+            Map<String, Object> attributes = new HashMap<>();
+            attributes.put(JiraAttributes.CLIENT_SECRET, "a".repeat(64));
+            attributes.put(JiraAttributes.USER_NAME, "test@example.com");
+
+            IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> jiraAttributes.validateAttributes(attributes)
+            );
+
+            assertTrue(exception.getMessage().contains("Please choose ONE authentication method"));
         }
     }
 
@@ -851,7 +970,8 @@ class JiraAttributesTest {
                 () -> jiraAttributes.testConnection(attributes)
             );
 
-            assertEquals("Please provide both Client Id and Client Secret", exception.getMessage());
+            assertTrue(exception.getMessage().contains("Incomplete OAuth 2.0 credentials detected"));
+            assertTrue(exception.getMessage().contains("Please provide BOTH Client ID and Client Secret"));
         }
 
         @Test
@@ -868,7 +988,8 @@ class JiraAttributesTest {
                 () -> jiraAttributes.testConnection(attributes)
             );
 
-            assertEquals("Please provide both Client Id and Client Secret", exception.getMessage());
+            assertTrue(exception.getMessage().contains("Incomplete OAuth 2.0 credentials detected"));
+            assertTrue(exception.getMessage().contains("Please provide BOTH Client ID and Client Secret"));
         }
 
         @Test
@@ -885,7 +1006,8 @@ class JiraAttributesTest {
                 () -> jiraAttributes.testConnection(attributes)
             );
 
-            assertEquals("Please provide Admin Auth Token, Admin User Name, and Host Url", exception.getMessage());
+            assertTrue(exception.getMessage().contains("Incomplete Basic Auth credentials detected"));
+            assertTrue(exception.getMessage().contains("Please provide ALL three fields"));
         }
 
         @Test
@@ -902,7 +1024,8 @@ class JiraAttributesTest {
                 () -> jiraAttributes.testConnection(attributes)
             );
 
-            assertEquals("Please provide Admin Auth Token, Admin User Name, and Host Url", exception.getMessage());
+            assertTrue(exception.getMessage().contains("Incomplete Basic Auth credentials detected"));
+            assertTrue(exception.getMessage().contains("Please provide ALL three fields"));
         }
 
         @Test
@@ -919,7 +1042,8 @@ class JiraAttributesTest {
                 () -> jiraAttributes.testConnection(attributes)
             );
 
-            assertEquals("Please provide Admin Auth Token, Admin User Name, and Host Url", exception.getMessage());
+            assertTrue(exception.getMessage().contains("Incomplete Basic Auth credentials detected"));
+            assertTrue(exception.getMessage().contains("Please provide ALL three fields"));
         }
 
         @Test
@@ -937,7 +1061,8 @@ class JiraAttributesTest {
                 () -> jiraAttributes.testConnection(attributes)
             );
 
-            assertEquals("Please provide Admin Auth Token, Admin User Name, and Host Url", exception.getMessage());
+            assertTrue(exception.getMessage().contains("Incomplete Basic Auth credentials detected"));
+            assertTrue(exception.getMessage().contains("Please provide ALL three fields"));
         }
 
         @Test
@@ -955,7 +1080,8 @@ class JiraAttributesTest {
                 () -> jiraAttributes.testConnection(attributes)
             );
 
-            assertEquals("Please provide Admin Auth Token, Admin User Name, and Host Url", exception.getMessage());
+            assertTrue(exception.getMessage().contains("Incomplete Basic Auth credentials detected"));
+            assertTrue(exception.getMessage().contains("Please provide ALL three fields"));
         }
 
         @Test
@@ -973,7 +1099,544 @@ class JiraAttributesTest {
                 () -> jiraAttributes.testConnection(attributes)
             );
 
-            assertEquals("Please provide Admin Auth Token, Admin User Name, and Host Url", exception.getMessage());
+            assertTrue(exception.getMessage().contains("Incomplete Basic Auth credentials detected"));
+            assertTrue(exception.getMessage().contains("Please provide ALL three fields"));
+        }
+
+        @Test
+        @DisplayName("Should take OAuth path when isManagedCredentialsEnabled is true with no own OAuth creds")
+        void testConnection_ManagedCredentials_TakesOAuthPath() {
+            // Set up routing so JiraService constructor does not NPE
+            RoutingInfo routingInfo = mock(RoutingInfo.class);
+            lenient().when(invoker.getRoutingInfo()).thenReturn(routingInfo);
+            lenient().when(routingInfo.getRoutingURL(HttpProtocol.PROTOCOL_NAME, RoutingInfo.Type.APPLIANCE))
+                    .thenReturn("http://localhost:8080");
+
+            // Empty attributes — no own OAuth credentials, no Basic Auth
+            Map<String, Object> attributes = new HashMap<>();
+
+            // Spy so we can stub isManagedCredentialsEnabled() without changing real state
+            JiraAttributes spy = spy(jiraAttributes);
+            doReturn(true).when(spy).isManagedCredentialsEnabled();
+
+            // The OAuth path is entered; the REST client fails in the test environment
+            // (no Jersey provider on test classpath) — the important assertion is that
+            // neither the "Incomplete OAuth" nor "Incomplete Basic Auth" guard is triggered.
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> spy.testConnection(attributes));
+            assertFalse(ex.getMessage().contains("Incomplete OAuth 2.0 credentials detected"),
+                    "Should not reject as partial OAuth — managed path was entered");
+            assertFalse(ex.getMessage().contains("Incomplete Basic Auth credentials detected"),
+                    "Should not reject as partial Basic Auth — managed path was entered");
+        }
+    }
+
+    // ── NEW: credential snapshot fallback tests ────────────────────────────
+
+    @Nested
+    @DisplayName("Credential Snapshot Fallback Tests")
+    class CredentialSnapshotFallbackTests {
+
+        private static final String INVOKER_ID = "test-invoker-id";
+        private static final String SNAP_HOST   = "cred." + INVOKER_ID + ".hostUrl";
+        private static final String SNAP_USER   = "cred." + INVOKER_ID + ".userName";
+        private static final String SNAP_TOKEN  = "cred." + INVOKER_ID + ".authToken";
+        private static final String SNAP_CID    = "cred." + INVOKER_ID + ".clientId";
+        private static final String SNAP_CSEC   = "cred." + INVOKER_ID + ".clientSecret";
+
+        @BeforeEach
+        void setUpSnap() {
+            // lenient: some tests return the super-value before credSnap is ever consulted
+            lenient().when(requestContext.getInvokerId()).thenReturn(INVOKER_ID);
+        }
+
+        // ── getHostUrl ──
+
+        @Test
+        @DisplayName("getHostUrl returns invoker-attribute value when snapshot is absent")
+        void testGetHostUrl_ReturnsInvokerValue_WhenSnapshotAbsent() {
+            // Credential snapshot is checked first but returns null (not stubbed),
+            // so invoker's value (set in outer setUp) is used as the fallback.
+            assertEquals("https://test.atlassian.net", jiraAttributes.getHostUrl());
+        }
+
+        @Test
+        @DisplayName("getHostUrl falls back to snapshot when invoker attribute is null")
+        void testGetHostUrl_FallsBackToSnapshot_WhenNull() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.HOST_URL, null);
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_HOST)).thenReturn("https://snap.atlassian.net");
+
+            assertEquals("https://snap.atlassian.net", jiraAttributes.getHostUrl());
+            verify(sessionManager).get(SNAP_HOST);
+        }
+
+        @Test
+        @DisplayName("getHostUrl falls back to snapshot when invoker attribute is blank")
+        void testGetHostUrl_FallsBackToSnapshot_WhenBlank() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.HOST_URL, "   ");
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_HOST)).thenReturn("https://snap.atlassian.net");
+
+            assertEquals("https://snap.atlassian.net", jiraAttributes.getHostUrl());
+        }
+
+        @Test
+        @DisplayName("getHostUrl returns null when both invoker attribute and snapshot are absent")
+        void testGetHostUrl_ReturnsNull_WhenBothAbsent() {
+            Map<String, Object> attrs = new HashMap<>();
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_HOST)).thenReturn(null);
+
+            assertNull(jiraAttributes.getHostUrl());
+        }
+
+        // ── getUserName ──
+
+        @Test
+        @DisplayName("getUserName falls back to snapshot when invoker attribute is null")
+        void testGetUserName_FallsBackToSnapshot_WhenNull() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.USER_NAME, null);
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_USER)).thenReturn("snap@example.com");
+
+            assertEquals("snap@example.com", jiraAttributes.getUserName());
+        }
+
+        @Test
+        @DisplayName("getUserName falls back to snapshot when invoker attribute is blank")
+        void testGetUserName_FallsBackToSnapshot_WhenBlank() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.USER_NAME, "");
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_USER)).thenReturn("snap@example.com");
+
+            assertEquals("snap@example.com", jiraAttributes.getUserName());
+        }
+
+        // ── getAuthToken ──
+
+        @Test
+        @DisplayName("getAuthToken falls back to snapshot when invoker attribute is null")
+        void testGetAuthToken_FallsBackToSnapshot_WhenNull() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.AUTH_TOKEN, null);
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_TOKEN)).thenReturn("snap_token_abc");
+
+            assertEquals("snap_token_abc", jiraAttributes.getAuthToken());
+        }
+
+        @Test
+        @DisplayName("getAuthToken falls back to snapshot when invoker attribute is blank")
+        void testGetAuthToken_FallsBackToSnapshot_WhenBlank() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.AUTH_TOKEN, "  ");
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_TOKEN)).thenReturn("snap_token_abc");
+
+            assertEquals("snap_token_abc", jiraAttributes.getAuthToken());
+        }
+
+        // ── getClientId ──
+
+        @Test
+        @DisplayName("getClientId falls back to snapshot when invoker attribute is null")
+        void testGetClientId_FallsBackToSnapshot_WhenNull() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.CLIENT_ID, null);
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_CID)).thenReturn("snap-client-id");
+
+            assertEquals("snap-client-id", jiraAttributes.getClientId());
+        }
+
+        @Test
+        @DisplayName("getClientId falls back to snapshot when invoker attribute is blank")
+        void testGetClientId_FallsBackToSnapshot_WhenBlank() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.CLIENT_ID, "");
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_CID)).thenReturn("snap-client-id");
+
+            assertEquals("snap-client-id", jiraAttributes.getClientId());
+        }
+
+        @Test
+        @DisplayName("getClientId returns null when both invoker attribute and snapshot are absent")
+        void testGetClientId_ReturnsNull_WhenBothAbsent() {
+            Map<String, Object> attrs = new HashMap<>();
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_CID)).thenReturn(null);
+
+            assertNull(jiraAttributes.getClientId());
+        }
+
+        // ── getClientSecret ──
+
+        @Test
+        @DisplayName("getClientSecret falls back to snapshot when invoker attribute is null")
+        void testGetClientSecret_FallsBackToSnapshot_WhenNull() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.CLIENT_SECRET, null);
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_CSEC)).thenReturn("snap-secret-abcdefghij");
+
+            assertEquals("snap-secret-abcdefghij", jiraAttributes.getClientSecret());
+        }
+
+        @Test
+        @DisplayName("getClientSecret falls back to snapshot when invoker attribute is blank")
+        void testGetClientSecret_FallsBackToSnapshot_WhenBlank() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.CLIENT_SECRET, "   ");
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_CSEC)).thenReturn("snap-secret-abcdefghij");
+
+            assertEquals("snap-secret-abcdefghij", jiraAttributes.getClientSecret());
+        }
+
+        @Test
+        @DisplayName("getClientId prefers snapshot over non-blank invoker attribute")
+        void testGetClientId_PrefersSnapshot_OverInvokerAttribute() {
+            // Invoker has a stale clientId; snapshot has the correct one
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.CLIENT_ID, "old-stale-client-id");
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_CID)).thenReturn("new-correct-client-id");
+
+            // Snapshot should win over invoker attribute
+            assertEquals("new-correct-client-id", jiraAttributes.getClientId());
+        }
+
+        @Test
+        @DisplayName("getClientSecret prefers snapshot over non-blank invoker attribute")
+        void testGetClientSecret_PrefersSnapshot_OverInvokerAttribute() {
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put(JiraAttributes.CLIENT_SECRET, "old-stale-secret");
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            when(sessionManager.get(SNAP_CSEC)).thenReturn("new-correct-secret");
+
+            assertEquals("new-correct-secret", jiraAttributes.getClientSecret());
+        }
+
+        @Test
+        @DisplayName("credSnap returns null when sessionManager is null (no NPE, falls back gracefully)")
+        void testCredSnap_ReturnsNull_WhenSessionManagerNull() {
+            // Invoker has no credentials so super returns null; sessionManager=null → credSnap returns null
+            Map<String, Object> emptyAttrs = new HashMap<>();
+            when(invoker.getAttributes()).thenReturn(emptyAttrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, null, authorizationContext);
+
+            assertNull(jiraAttributes.getHostUrl());
+            assertNull(jiraAttributes.getClientId());
+        }
+
+        @Test
+        @DisplayName("credSnap returns null when requestContext is null (no NPE, falls back gracefully)")
+        void testCredSnap_ReturnsNull_WhenRequestContextNull() {
+            // Invoker has no credentials so super returns null; requestContext=null → credSnap returns null
+            Map<String, Object> emptyAttrs = new HashMap<>();
+            when(invoker.getAttributes()).thenReturn(emptyAttrs);
+            jiraAttributes = new JiraAttributes(invoker, null, sessionManager, authorizationContext);
+
+            assertNull(jiraAttributes.getHostUrl());
+            assertNull(jiraAttributes.getUserName());
+            assertNull(jiraAttributes.getAuthToken());
+            assertNull(jiraAttributes.getClientId());
+            assertNull(jiraAttributes.getClientSecret());
+        }
+    }
+
+    // ── NEW: isManagedCredentialsEnabled override tests ──────────────────
+
+    @Nested
+    @DisplayName("isManagedCredentialsEnabled Override Tests")
+    class IsManagedCredentialsEnabledTests {
+
+        private static final String INVOKER_ID  = "test-invoker-id";
+        private static final String SNAP_MODE   = "cred." + INVOKER_ID + ".credentialsMode";
+
+        @BeforeEach
+        void setUpSnap() {
+            when(requestContext.getInvokerId()).thenReturn(INVOKER_ID);
+        }
+
+        @Test
+        @DisplayName("Returns true via super when clientId and clientSecret are absent (ownOAuth=false)")
+        void testIsManagedCredentialsEnabled_SuperReturnsTrue_WhenNoCreds() {
+            // Invoker has no clientId or clientSecret → super sees ownOAuthPresent=false → returns true
+            Map<String, Object> attrs = new HashMap<>();
+            when(invoker.getAttributes()).thenReturn(attrs);
+            jiraAttributes = new JiraAttributes(invoker, requestContext, sessionManager, authorizationContext);
+
+            assertTrue(jiraAttributes.isManagedCredentialsEnabled());
+        }
+
+        @Test
+        @DisplayName("Returns false when super returns false and credSnap credentialsMode is null")
+        void testIsManagedCredentialsEnabled_ReturnsFalse_WhenSnapNull() {
+            // Invoker has own clientId+clientSecret so ownOAuthPresent=true → super returns false
+            // credSnap returns null
+            when(sessionManager.get(SNAP_MODE)).thenReturn(null);
+
+            assertFalse(jiraAttributes.isManagedCredentialsEnabled());
+        }
+
+        @Test
+        @DisplayName("Returns false when credSnap credentialsMode is 'own'")
+        void testIsManagedCredentialsEnabled_ReturnsFalse_WhenSnapOwn() {
+            when(sessionManager.get(SNAP_MODE)).thenReturn("own");
+
+            assertFalse(jiraAttributes.isManagedCredentialsEnabled());
+        }
+
+        @Test
+        @DisplayName("Returns true when credSnap credentialsMode is 'managed' (snap takes precedence over store)")
+        void testIsManagedCredentialsEnabled_ReturnsFalse_WhenManagedButStoreNotConfigured() {
+            // The JSM override returns true immediately when snap says "managed"
+            // without consulting ManagedCredentialStore — the snap is authoritative.
+            when(sessionManager.get(SNAP_MODE)).thenReturn("managed");
+
+            assertTrue(jiraAttributes.isManagedCredentialsEnabled());
+        }
+
+        @Test
+        @DisplayName("Returns true when credSnap credentialsMode is 'managed'")
+        void testIsManagedCredentialsEnabled_ReturnsTrue_WhenManagedAndStoreConfigured() {
+            when(sessionManager.get(SNAP_MODE)).thenReturn("managed");
+
+            assertTrue(jiraAttributes.isManagedCredentialsEnabled());
+        }
+
+        @Test
+        @DisplayName("Returns true when credSnap credentialsMode is 'MANAGED' (case-insensitive)")
+        void testIsManagedCredentialsEnabled_CaseInsensitive() {
+            when(sessionManager.get(SNAP_MODE)).thenReturn("MANAGED");
+
+            assertTrue(jiraAttributes.isManagedCredentialsEnabled());
+        }
+    }
+
+    // ── Overridden protected method tests ──────────────────────────────────────
+
+    @Nested
+    @DisplayName("Overridden Protected Method Tests")
+    class OverriddenMethodTests {
+
+        @Test
+        @DisplayName("getCredentialsModeFieldName should return CREDENTIALS_MODE constant")
+        void testGetCredentialsModeFieldName() throws Exception {
+            Method method = JiraAttributes.class.getDeclaredMethod("getCredentialsModeFieldName");
+            method.setAccessible(true);
+            assertEquals(JiraAttributes.CREDENTIALS_MODE, method.invoke(jiraAttributes));
+        }
+
+        @Test
+        @DisplayName("getExtensionType should return 'jira-service-management'")
+        void testGetExtensionType() throws Exception {
+            Method method = JiraAttributes.class.getDeclaredMethod("getExtensionType");
+            method.setAccessible(true);
+            assertEquals("jira-service-management", method.invoke(jiraAttributes));
+        }
+
+        @Test
+        @DisplayName("getServiceAccountFieldName should return SERVICE_ACCOUNT constant")
+        void testGetServiceAccountFieldName() throws Exception {
+            Method method = JiraAttributes.class.getDeclaredMethod("getServiceAccountFieldName");
+            method.setAccessible(true);
+            assertEquals(JiraAttributes.SERVICE_ACCOUNT, method.invoke(jiraAttributes));
+        }
+    }
+
+    // ── testConnectionWithRestClient branch coverage (via reflection) ──────────
+
+    @Nested
+    @DisplayName("testConnectionWithRestClient Branch Tests")
+    class TestConnectionWithRestClientTests {
+
+        private RestClient mockRestClient;
+
+        @BeforeEach
+        void setUpRestClient() {
+            mockRestClient = mock(RestClient.class);
+        }
+
+        /** Calls the private method via reflection; propagates InvocationTargetException. */
+        private void invokePrivate(RestClient client) throws Exception {
+            Method method = JiraAttributes.class.getDeclaredMethod(
+                    "testConnectionWithRestClient", Map.class, RestClient.class);
+            method.setAccessible(true);
+            method.invoke(jiraAttributes, new HashMap<>(), client);
+        }
+
+        @Test
+        @DisplayName("Should succeed (no exception) when response JSON contains 'self' field")
+        void shouldSucceedWhenResponseHasSelf() {
+            when(mockRestClient.fetch(eq("myself"), any(), eq(String.class)))
+                    .thenReturn("{\"self\":\"https://api.atlassian.net/rest/api/3/user?accountId=abc123\"}");
+
+            assertDoesNotThrow(() -> invokePrivate(mockRestClient));
+        }
+
+        @Test
+        @DisplayName("Should throw IllegalArgumentException with 'incorrect credentials' message when 'self' absent and 'message' present")
+        void shouldThrowIncorrectCredentialsWhenNoSelfButMessagePresent() throws Exception {
+            when(mockRestClient.fetch(eq("myself"), any(), eq(String.class)))
+                    .thenReturn("{\"message\":\"Unauthorized\"}");
+
+            InvocationTargetException ex = assertThrows(InvocationTargetException.class,
+                    () -> invokePrivate(mockRestClient));
+            assertInstanceOf(IllegalArgumentException.class, ex.getCause());
+            assertTrue(ex.getCause().getMessage().contains(
+                    "The credentials provided are incorrect"));
+        }
+
+        @Test
+        @DisplayName("Should throw 'Wrong Credentials!' when response has no 'self' and no 'message'")
+        void shouldThrowWrongCredentialsWhenNoSelfAndNoMessage() throws Exception {
+            when(mockRestClient.fetch(eq("myself"), any(), eq(String.class)))
+                    .thenReturn("{}");
+
+            InvocationTargetException ex = assertThrows(InvocationTargetException.class,
+                    () -> invokePrivate(mockRestClient));
+            assertInstanceOf(IllegalArgumentException.class, ex.getCause());
+            // "Wrong Credentials!" is thrown inside the try block and is re-caught by
+            // catch(Exception), which wraps it. The original message is therefore one
+            // level deeper in the cause chain.
+            assertInstanceOf(IllegalArgumentException.class, ex.getCause().getCause());
+            assertTrue(ex.getCause().getCause().getMessage().contains("Wrong Credentials!"));
+        }
+
+        @Test
+        @DisplayName("Should rethrow MustAuthorizeException directly without wrapping it")
+        void shouldRethrowMustAuthorizeException() throws Exception {
+            MustAuthorizeException mustAuth = mock(MustAuthorizeException.class);
+            when(mockRestClient.fetch(eq("myself"), any(), eq(String.class)))
+                    .thenThrow(mustAuth);
+
+            InvocationTargetException ex = assertThrows(InvocationTargetException.class,
+                    () -> invokePrivate(mockRestClient));
+            assertSame(mustAuth, ex.getCause(),
+                    "MustAuthorizeException should be rethrown as-is, not wrapped");
+        }
+
+        @Test
+        @DisplayName("Should wrap generic Exception in IllegalArgumentException with 'incorrect credentials' message")
+        void shouldWrapGenericExceptionInIllegalArgumentException() throws Exception {
+            RuntimeException networkError = new RuntimeException("Connection refused");
+            when(mockRestClient.fetch(eq("myself"), any(), eq(String.class)))
+                    .thenThrow(networkError);
+
+            InvocationTargetException ex = assertThrows(InvocationTargetException.class,
+                    () -> invokePrivate(mockRestClient));
+            assertInstanceOf(IllegalArgumentException.class, ex.getCause());
+            assertTrue(ex.getCause().getMessage().contains(
+                    "The credentials provided are incorrect"));
+            assertSame(networkError, ex.getCause().getCause());
+        }
+    }
+
+    // ── testConnection basic-auth path ────────────────────────────────────────
+
+    @Nested
+    @DisplayName("testConnection Basic Auth Path Tests")
+    class TestConnectionBasicAuthPathTests {
+
+        private final Map<String, Object> basicAttributes = new HashMap<>();
+
+        @BeforeEach
+        void setUpBasicAttributes() {
+            basicAttributes.put(JiraAttributes.HOST_URL, "https://test.atlassian.net");
+            basicAttributes.put(JiraAttributes.USER_NAME, "user@example.com");
+            basicAttributes.put(JiraAttributes.AUTH_TOKEN, "auth_token_abc");
+        }
+
+        @Test
+        @DisplayName("Should enter basic auth path and succeed when AuthRestClient returns valid 'self' JSON")
+        void testConnection_BasicAuth_Success() {
+            try (MockedConstruction<AuthRestClient> mocked = mockConstruction(AuthRestClient.class,
+                    (mock, ctx) -> when(mock.fetch(eq("myself"), any(), eq(String.class)))
+                            .thenReturn("{\"self\":\"https://api.atlassian.net/user?accountId=xyz\"}"))) {
+
+                assertDoesNotThrow(() -> jiraAttributes.testConnection(basicAttributes));
+                assertEquals(1, mocked.constructed().size(),
+                        "Exactly one AuthRestClient should have been constructed");
+            }
+        }
+
+        @Test
+        @DisplayName("Should enter basic auth path and throw when AuthRestClient response lacks 'self'")
+        void testConnection_BasicAuth_InvalidCredentials() {
+            try (MockedConstruction<AuthRestClient> mocked = mockConstruction(AuthRestClient.class,
+                    (mock, ctx) -> when(mock.fetch(eq("myself"), any(), eq(String.class)))
+                            .thenReturn("{\"message\":\"Bad credentials\"}"))) {
+
+                IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                        () -> jiraAttributes.testConnection(basicAttributes));
+                assertTrue(ex.getMessage().contains("The credentials provided are incorrect"));
+            }
+        }
+
+        @Test
+        @DisplayName("Should enter basic auth path and throw 'Wrong Credentials!' when response is empty object")
+        void testConnection_BasicAuth_WrongCredentials() {
+            try (MockedConstruction<AuthRestClient> mocked = mockConstruction(AuthRestClient.class,
+                    (mock, ctx) -> when(mock.fetch(eq("myself"), any(), eq(String.class)))
+                            .thenReturn("{}"))) {
+
+                IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                        () -> jiraAttributes.testConnection(basicAttributes));
+                // "Wrong Credentials!" is thrown inside testConnectionWithRestClient's try
+                // block and is re-caught by catch(Exception), which wraps it. The original
+                // message is therefore in the cause, not in the outer exception message.
+                assertTrue(ex.getCause().getMessage().contains("Wrong Credentials!"));
+            }
+        }
+
+        @Test
+        @DisplayName("Should enter basic auth path and rethrow MustAuthorizeException")
+        void testConnection_BasicAuth_MustAuthorizeException() {
+            MustAuthorizeException mustAuth = mock(MustAuthorizeException.class);
+            try (MockedConstruction<AuthRestClient> mocked = mockConstruction(AuthRestClient.class,
+                    (mock, ctx) -> when(mock.fetch(eq("myself"), any(), eq(String.class)))
+                            .thenThrow(mustAuth))) {
+
+                MustAuthorizeException thrown = assertThrows(MustAuthorizeException.class,
+                        () -> jiraAttributes.testConnection(basicAttributes));
+                assertSame(mustAuth, thrown);
+            }
         }
     }
 }

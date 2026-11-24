@@ -60,6 +60,7 @@ Issue Key: "PROJ-123"
       "displayName": "John Doe"
     },
     "created": "2024-01-10T09:00:00.000Z",
+    "lastModifiedDate": "2024-01-15T14:30:00.000Z",
     "projectKey": "PROJ"
   }
 }

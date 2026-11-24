@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
@@ -290,5 +290,24 @@ class JiraRequestAuthenticatorTest {
     void testImplementsRequestAuthenticator() {
         // Assert
         assertTrue(RequestAuthenticator.class.isAssignableFrom(JiraRequestAuthenticator.class));
+    }
+
+    @Test
+    @DisplayName("buildAuthorizationUrl delegates to jiraService.buildSecuredAuthorizationUrl")
+    void testBuildAuthorizationUrl_DelegatesToBuildSecuredAuthorizationUrl() throws Exception {
+        // Arrange
+        String accountId = "test-account-999";
+        String expectedUrl = "https://auth.atlassian.com/authorize?client_id=cid&state=nonce123";
+        when(jiraService.buildSecuredAuthorizationUrl(accountId)).thenReturn(expectedUrl);
+
+        // Act — invoke the protected override via reflection
+        java.lang.reflect.Method method = JiraRequestAuthenticator.class
+                .getDeclaredMethod("buildAuthorizationUrl", String.class);
+        method.setAccessible(true);
+        String result = (String) method.invoke(authenticator, accountId);
+
+        // Assert
+        assertEquals(expectedUrl, result);
+        verify(jiraService).buildSecuredAuthorizationUrl(accountId);
     }
 }

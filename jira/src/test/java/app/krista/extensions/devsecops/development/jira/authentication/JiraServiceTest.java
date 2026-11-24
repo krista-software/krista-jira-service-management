@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
@@ -24,6 +24,9 @@ import app.krista.extension.request.RoutingInfo;
 import app.krista.extension.request.protos.http.HttpProtocol;
 import app.krista.extensions.devsecops.development.jira.JiraAttributes;
 import app.krista.extensions.devsecops.development.jira.util.SessionManager;
+import app.krista.sdk.atlassian.constants.AtlassianConstants;
+import app.krista.sdk.atlassian.oauth.AbstractAtlassianOAuthService;
+import app.krista.sdk.atlassian.oauth.AccessibleResource;
 import app.krista.ksdk.accounts.Account;
 import app.krista.ksdk.context.AuthorizationContext;
 import app.krista.ksdk.context.RequestContext;
@@ -31,6 +34,7 @@ import com.github.scribejava.core.model.OAuth2AccessToken;
 import com.github.scribejava.core.oauth.OAuth20Service;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -50,7 +54,6 @@ class JiraServiceTest {
     private JiraAttributes jiraAttributes;
     private Invoker invoker;
     private RoutingInfo routingInfo;
-    private OAuth20Service oAuth20Service;
     private Account account;
 
     @BeforeEach
@@ -61,7 +64,6 @@ class JiraServiceTest {
         jiraAttributes = mock(JiraAttributes.class);
         invoker = mock(Invoker.class);
         routingInfo = mock(RoutingInfo.class);
-        oAuth20Service = mock(OAuth20Service.class);
         account = mock(Account.class);
 
         when(invoker.getRoutingInfo()).thenReturn(routingInfo);
@@ -85,10 +87,13 @@ class JiraServiceTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
 
         // Create a new instance to test
-        JiraService testService = new JiraService(requestContext, sessionManager, invoker, authorizationContext, jiraAttributes);
+        JiraService testService = new JiraService(requestContext, sessionManager, invoker, authorizationContext,
+                jiraAttributes);
 
         // Act
         OAuth20Service result = testService.getOauthService();
@@ -96,8 +101,8 @@ class JiraServiceTest {
         // Assert
         assertNotNull(result);
         verify(jiraAttributes, atLeast(1)).areOAuthCredentialsPresent();
-        verify(jiraAttributes, atLeast(1)).getClientId();
-        verify(jiraAttributes, atLeast(1)).getClientSecret();
+        verify(jiraAttributes, atLeast(1)).getEffectiveClientId();
+        verify(jiraAttributes, atLeast(1)).getEffectiveClientSecret();
     }
 
     @Test
@@ -132,7 +137,7 @@ class JiraServiceTest {
     @DisplayName("Should have correct resource URL")
     void testResourceUrl_IsCorrect() {
         // Assert
-        assertEquals("https://api.atlassian.com/oauth/token/accessible-resources", JiraService.RESOURCE_URL);
+        assertEquals("https://api.atlassian.com/oauth/token/accessible-resources", AtlassianConstants.ACCESSIBLE_RESOURCES_URL);
     }
 
     @Test
@@ -165,7 +170,7 @@ class JiraServiceTest {
     @DisplayName("AccessibleResources should have correct constructor")
     void testAccessibleResources_Constructor() {
         // Act
-        JiraService.AccessibleResources resources = new JiraService.AccessibleResources(
+        AccessibleResource resources = new AccessibleResource(
                 "test-id", List.of("scope1", "scope2"));
 
         // Assert
@@ -174,11 +179,10 @@ class JiraServiceTest {
     }
 
     @Test
-    @DisplayName("AccessibleResources should be public static class")
+    @DisplayName("AccessibleResource should be a public class")
     void testAccessibleResources_IsPublicStatic() {
-        // Assert
-        assertTrue(java.lang.reflect.Modifier.isPublic(JiraService.AccessibleResources.class.getModifiers()));
-        assertTrue(java.lang.reflect.Modifier.isStatic(JiraService.AccessibleResources.class.getModifiers()));
+        // Assert (the SDK type is a public top-level class)
+        assertTrue(java.lang.reflect.Modifier.isPublic(AccessibleResource.class.getModifiers()));
     }
 
     @Test
@@ -187,8 +191,12 @@ class JiraServiceTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account#test-invoker")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(requestContext.invokeAsUser()).thenReturn(false); // Should use clientId#clientSecret
+        String expectedKey = "test-client-id#test-client-secret#test-invoker";
+        when(sessionManager.get(expectedKey)).thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -203,7 +211,7 @@ class JiraServiceTest {
             when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
 
             // Use reflection to set the oAuthService
-            java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+            java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
             field.setAccessible(true);
             field.set(jiraService, mockOAuthService);
 
@@ -213,8 +221,8 @@ class JiraServiceTest {
             // Assert
             assertNotNull(result);
             assertEquals("access-token", result.getAccessToken());
-            verify(sessionManager).getRefToken("test-account#test-invoker");
-            verify(sessionManager).storeRefToken("test-account#test-invoker", "new-refresh-token");
+            verify(sessionManager).get(expectedKey);
+            verify(sessionManager).store(expectedKey, "new-refresh-token");
         } catch (Exception e) {
             fail("Reflection or execution failed: " + e.getMessage());
         }
@@ -226,23 +234,28 @@ class JiraServiceTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn(null);
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(requestContext.getInvokerId()).thenReturn("test-invoker");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker")).thenReturn(null);
 
         jiraService = new JiraService(requestContext, sessionManager, invoker, authorizationContext, jiraAttributes);
 
         // Act & Assert
-        assertThrows(MustAuthorizeException.class, () -> jiraService.getJiraAccessToken(null, null));
+        assertThrows(MustAuthorizeException.class, () -> jiraService.getJiraAccessToken(null, "test-invoker"));
     }
 
     @Test
-    @DisplayName("Should return null when ExecutionException occurs")
-    void testGetJiraAccessToken_ReturnsNull_OnExecutionException() {
+    @DisplayName("Should throw MustAuthorizeException when ExecutionException occurs")
+    void testGetJiraAccessToken_ThrowsMustAuthorizeException_OnExecutionException() {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account#test-invoker")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker")).thenReturn("refresh-token");
 
         OAuth20Service mockOAuthService = mock(OAuth20Service.class);
         when(mockOAuthService.getApiKey()).thenReturn("test-client-id");
@@ -253,15 +266,13 @@ class JiraServiceTest {
             when(mockOAuthService.refreshAccessToken("refresh-token"))
                     .thenThrow(new ExecutionException("Test error", new Exception()));
 
-            java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+            java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
             field.setAccessible(true);
             field.set(jiraService, mockOAuthService);
 
-            // Act
-            OAuth2AccessToken result = jiraService.getJiraAccessToken("test-account", "test-invoker");
-
-            // Assert
-            assertNull(result);
+            // Act & Assert
+            assertThrows(MustAuthorizeException.class,
+                    () -> jiraService.getJiraAccessToken("test-account", "test-invoker"));
         } catch (Exception e) {
             fail("Reflection failed: " + e.getMessage());
         }
@@ -273,16 +284,21 @@ class JiraServiceTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account#test-invoker")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker")).thenReturn("refresh-token");
 
         jiraService = new JiraService(requestContext, sessionManager, invoker, authorizationContext, jiraAttributes);
         OAuth20Service mockOAuthService = mock(OAuth20Service.class);
+        when(mockOAuthService.getApiKey()).thenReturn("test-client-id");
+        when(mockOAuthService.getApiSecret()).thenReturn("test-client-secret");
+
         try {
             when(mockOAuthService.refreshAccessToken("refresh-token"))
                     .thenThrow(new IOException("Test error"));
 
-            java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+            java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
             field.setAccessible(true);
             field.set(jiraService, mockOAuthService);
 
@@ -299,16 +315,21 @@ class JiraServiceTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account#test-invoker")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker")).thenReturn("refresh-token");
 
         jiraService = new JiraService(requestContext, sessionManager, invoker, authorizationContext, jiraAttributes);
         OAuth20Service mockOAuthService = mock(OAuth20Service.class);
+        when(mockOAuthService.getApiKey()).thenReturn("test-client-id");
+        when(mockOAuthService.getApiSecret()).thenReturn("test-client-secret");
+
         try {
             when(mockOAuthService.refreshAccessToken("refresh-token"))
                     .thenThrow(new InterruptedException("Test error"));
 
-            java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+            java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
             field.setAccessible(true);
             field.set(jiraService, mockOAuthService);
 
@@ -325,8 +346,13 @@ class JiraServiceTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(requestContext.getInvokerId()).thenReturn("test-invoker");
+        when(requestContext.invokeAsUser()).thenReturn(false);
+        String expectedKey = "test-client-id#test-client-secret#test-invoker";
+        when(sessionManager.get(expectedKey)).thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -340,7 +366,7 @@ class JiraServiceTest {
         try {
             when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
 
-            java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+            java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
             field.setAccessible(true);
             field.set(jiraService, mockOAuthService);
 
@@ -361,16 +387,21 @@ class JiraServiceTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(false);
         when(jiraAttributes.getClientId()).thenReturn(null);
+        when(jiraAttributes.getEffectiveClientId()).thenReturn(null);
         when(jiraAttributes.getClientSecret()).thenReturn(null);
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn(null);
+        when(sessionManager.get("null#null#test-invoker-id")).thenReturn("refresh-token");
 
         jiraService = new JiraService(requestContext, sessionManager, invoker, authorizationContext, jiraAttributes);
         OAuth20Service mockOAuthService = mock(OAuth20Service.class);
+        when(mockOAuthService.getApiKey()).thenReturn("");
+        when(mockOAuthService.getApiSecret()).thenReturn("");
+
         try {
             when(mockOAuthService.refreshAccessToken("refresh-token"))
                     .thenThrow(new ExecutionException("Test error", new Exception()));
 
-            java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+            java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
             field.setAccessible(true);
             field.set(jiraService, mockOAuthService);
 
@@ -387,16 +418,22 @@ class JiraServiceTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker-id"))
+                .thenReturn("refresh-token");
 
         jiraService = new JiraService(requestContext, sessionManager, invoker, authorizationContext, jiraAttributes);
         OAuth20Service mockOAuthService = mock(OAuth20Service.class);
+        when(mockOAuthService.getApiKey()).thenReturn("test-client-id");
+        when(mockOAuthService.getApiSecret()).thenReturn("test-client-secret");
+
         try {
             when(mockOAuthService.refreshAccessToken("refresh-token"))
                     .thenThrow(new RuntimeException("Test error"));
 
-            java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+            java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
             field.setAccessible(true);
             field.set(jiraService, mockOAuthService);
 
@@ -413,8 +450,11 @@ class JiraServiceTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker-id"))
+                .thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -428,7 +468,7 @@ class JiraServiceTest {
         try {
             when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
 
-            java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+            java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
             field.setAccessible(true);
             field.set(jiraService, mockOAuthService);
 
@@ -448,8 +488,10 @@ class JiraServiceTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("account-123#invoker-456")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#invoker-456")).thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -463,7 +505,7 @@ class JiraServiceTest {
         try {
             when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
 
-            java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+            java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
             field.setAccessible(true);
             field.set(jiraService, mockOAuthService);
 
@@ -475,5 +517,209 @@ class JiraServiceTest {
         } catch (Exception e) {
             fail("Reflection failed: " + e.getMessage());
         }
+    }
+
+    @Test
+    @DisplayName("Should throw MustAuthorizeException when refresh token is null (no-arg, invokeAsUser true)")
+    void testGetJiraAccessToken_ThrowsMustAuthorizeException_WhenNoRefreshTokenAndInvokeAsUser() {
+        // Arrange
+        when(requestContext.invokeAsUser()).thenReturn(true);
+        when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(sessionManager.get("test-account-id#test-invoker-id")).thenReturn(null);
+
+        // Act & Assert - throws because refresh token is null, regardless of
+        // invokeAsUser
+        assertThrows(MustAuthorizeException.class, () -> jiraService.getJiraAccessToken());
+    }
+
+    @Test
+    @DisplayName("Should throw MustAuthorizeException when refresh token is null (with params, invokeAsUser true)")
+    void testGetJiraAccessToken_WithParams_ThrowsMustAuthorizeException_WhenNoRefreshTokenAndInvokeAsUser() {
+        // Arrange
+        when(requestContext.invokeAsUser()).thenReturn(true);
+        when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(sessionManager.get("test-account#test-invoker")).thenReturn(null);
+
+        // Act & Assert - throws because refresh token is null, regardless of
+        // invokeAsUser
+        assertThrows(MustAuthorizeException.class,
+                () -> jiraService.getJiraAccessToken("test-account", "test-invoker"));
+    }
+
+    // ── NEW: getOauthService() rebuild behaviour (|| fix + callback URL change) ──
+
+    @Test
+    @DisplayName("Should rebuild OAuth service when only clientId changes")
+    void testGetOauthService_Rebuilds_WhenOnlyClientIdChanges() {
+        when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("original-client-id");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("original-client-secret");
+
+        JiraService testService = new JiraService(requestContext, sessionManager, invoker,
+                authorizationContext, jiraAttributes);
+        OAuth20Service first = testService.getOauthService();
+        assertNotNull(first);
+
+        // Change only clientId — with the || fix this must trigger a rebuild
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("new-client-id");
+
+        OAuth20Service second = testService.getOauthService();
+        assertNotSame(first, second, "Should rebuild when clientId changes");
+    }
+
+    @Test
+    @DisplayName("Should rebuild OAuth service when only clientSecret changes")
+    void testGetOauthService_Rebuilds_WhenOnlyClientSecretChanges() {
+        when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("client-id");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("original-secret");
+
+        JiraService testService = new JiraService(requestContext, sessionManager, invoker,
+                authorizationContext, jiraAttributes);
+        OAuth20Service first = testService.getOauthService();
+        assertNotNull(first);
+
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("new-secret");
+
+        OAuth20Service second = testService.getOauthService();
+        assertNotSame(first, second, "Should rebuild when clientSecret changes");
+    }
+
+    @Test
+    @DisplayName("Should not rebuild OAuth service when credentials and callback URL are unchanged")
+    void testGetOauthService_DoesNotRebuild_WhenNothingChanges() {
+        when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("client-id");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("client-secret");
+
+        JiraService testService = new JiraService(requestContext, sessionManager, invoker,
+                authorizationContext, jiraAttributes);
+        OAuth20Service first = testService.getOauthService();
+        OAuth20Service second = testService.getOauthService();
+
+        assertSame(first, second, "Should not rebuild when nothing changes");
+    }
+
+    @Test
+    @DisplayName("Should rebuild OAuth service when managed mode toggles (callback URL changes)")
+    void testGetOauthService_Rebuilds_WhenCallbackUrlChanges() {
+        // Start with managed=false (own credentials callback URL)
+        when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+        when(jiraAttributes.isManagedCredentialsEnabled()).thenReturn(false);
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("client-id");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("client-secret");
+
+        JiraService testService = new JiraService(requestContext, sessionManager, invoker,
+                authorizationContext, jiraAttributes);
+        OAuth20Service first = testService.getOauthService();
+        assertNotNull(first);
+
+        // Toggle to managed=true — callback URL changes from invoker-specific to generic
+        when(jiraAttributes.isManagedCredentialsEnabled()).thenReturn(true);
+
+        OAuth20Service second = testService.getOauthService();
+        assertNotSame(first, second, "Should rebuild when managed mode (and thus callback URL) changes");
+    }
+
+    // ── NEW: buildSecuredAuthorizationUrl() tests ──
+
+    @Nested
+    @DisplayName("buildSecuredAuthorizationUrl Tests")
+    class BuildSecuredAuthorizationUrlTests {
+
+        @BeforeEach
+        void setUpOAuth() {
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+            when(jiraAttributes.getEffectiveClientId()).thenReturn("client-id");
+            when(jiraAttributes.getEffectiveClientSecret()).thenReturn("client-secret");
+        }
+
+        @Test
+        @DisplayName("Returns non-null URL for own-credentials mode")
+        void testBuildSecuredAuthorizationUrl_OwnCredentials_ReturnsUrl() {
+            when(jiraAttributes.isManagedCredentialsEnabled()).thenReturn(false);
+            when(requestContext.getInvokerId()).thenReturn("test-invoker-id");
+
+            JiraService testService = new JiraService(requestContext, sessionManager, invoker,
+                    authorizationContext, jiraAttributes);
+
+            String url = testService.buildSecuredAuthorizationUrl("account-123");
+
+            assertNotNull(url);
+            assertFalse(url.isBlank());
+            assertTrue(url.startsWith("https://"), "Should be an HTTPS URL");
+        }
+
+        @Test
+        @DisplayName("Returns non-null URL for managed (Quick Setup) mode")
+        void testBuildSecuredAuthorizationUrl_ManagedMode_ReturnsUrl() {
+            when(jiraAttributes.isManagedCredentialsEnabled()).thenReturn(true);
+            when(requestContext.getInvokerId()).thenReturn("test-invoker-id");
+
+            JiraService testService = new JiraService(requestContext, sessionManager, invoker,
+                    authorizationContext, jiraAttributes);
+
+            String url = testService.buildSecuredAuthorizationUrl("account-456");
+
+            assertNotNull(url);
+            assertFalse(url.isBlank());
+            assertTrue(url.startsWith("https://"), "Should be an HTTPS URL");
+        }
+
+        @Test
+        @DisplayName("Managed and own-credentials URLs differ (different state/callback)")
+        void testBuildSecuredAuthorizationUrl_ManagedVsOwn_ProduceDifferentUrls() {
+            when(requestContext.getInvokerId()).thenReturn("test-invoker-id");
+
+            when(jiraAttributes.isManagedCredentialsEnabled()).thenReturn(false);
+            JiraService ownService = new JiraService(requestContext, sessionManager, invoker,
+                    authorizationContext, jiraAttributes);
+            String ownUrl = ownService.buildSecuredAuthorizationUrl("account-789");
+
+            when(jiraAttributes.isManagedCredentialsEnabled()).thenReturn(true);
+            JiraService managedService = new JiraService(requestContext, sessionManager, invoker,
+                    authorizationContext, jiraAttributes);
+            String managedUrl = managedService.buildSecuredAuthorizationUrl("account-789");
+
+            assertNotEquals(ownUrl, managedUrl,
+                    "Managed and own-credential authorization URLs must differ");
+        }
+    }
+
+    @Test
+    @DisplayName("Should throw MustAuthorizeException when user token is missing (Fallback to app-wide token is disabled)")
+    void testGetJiraAccessToken_NoFallbackToAppWideToken() throws Exception {
+        // Arrange
+        when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+        when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+
+        when(requestContext.invokeAsUser()).thenReturn(true);
+
+        String userKey = "test-account#test-invoker";
+        // App key is no longer used for fallback in user context
+        String appKey = "test-client-id#test-invoker";
+
+        when(sessionManager.get(userKey)).thenReturn(null);
+        // Even if app token exists, it won't be picked up by the current logic for
+        // users
+        when(sessionManager.get(appKey)).thenReturn("app-refresh-token");
+
+        OAuth20Service mockOAuthService = mock(OAuth20Service.class);
+        when(mockOAuthService.getApiKey()).thenReturn("test-client-id");
+        when(mockOAuthService.getApiSecret()).thenReturn("test-client-secret");
+
+        jiraService = new JiraService(requestContext, sessionManager, invoker, authorizationContext, jiraAttributes);
+        java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
+        field.setAccessible(true);
+        field.set(jiraService, mockOAuthService);
+
+        // Act & Assert
+        assertThrows(MustAuthorizeException.class,
+                () -> jiraService.getJiraAccessToken("test-account", "test-invoker"));
+        verify(sessionManager, atLeastOnce()).get(userKey);
+        verify(sessionManager, never()).get(appKey);
     }
 }

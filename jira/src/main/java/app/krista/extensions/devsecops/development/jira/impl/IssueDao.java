@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.impl;
@@ -26,7 +26,7 @@ import app.krista.extensions.devsecops.development.jira.catalog.entities.*;
 import app.krista.extensions.devsecops.development.jira.services.HtmlToAdfConverter;
 import app.krista.extensions.devsecops.development.jira.services.JiraIssue;
 import app.krista.extensions.devsecops.development.jira.services.JiraUser;
-import app.krista.extensions.devsecops.development.jira.util.DatePlus;
+import app.krista.sdk.atlassian.util.DatePlus;
 import app.krista.extensions.devsecops.development.jira.util.JiraConstants;
 import app.krista.model.base.FreeForm;
 import com.google.gson.JsonArray;
@@ -47,10 +47,13 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import java.io.File;
 import java.text.SimpleDateFormat;
+import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.util.*;
+import java.util.Locale;
 
+import static app.krista.extensions.devsecops.development.jira.services.JiraIssue.UPDATED;
 import static app.krista.extensions.devsecops.development.jira.util.JiraConstants.GSON;
 import static app.krista.extensions.devsecops.development.jira.util.JiraConstants.VALUE;
 import static app.krista.omni.sdk.complex_fields.impl.util.Constants.FIELDS;
@@ -69,6 +72,10 @@ public final class IssueDao {
             .append(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
             .appendPattern("[Z][XXX]")
             .toFormatter();
+
+    private static final DateTimeFormatter OUTPUT_DATE_FORMATTER =
+            DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a", Locale.US);
+
     private final RestClientFactory restClientFactory;
     private final ProjectDao projectDao;
     private final UserDao userDao;
@@ -668,7 +675,9 @@ public final class IssueDao {
     }
 
     public List<Map<String, Object>> getComments(String issueKey) {
-        String res = getRestClient().fetch("issue/" + issueKey + "/comment", new HashMap<>(), String.class);
+        Map<String, Object> queryParams = new HashMap<>();
+        queryParams.put("orderBy", "-created");
+        String res = getRestClient().fetch("issue/" + issueKey + "/comment", queryParams, String.class);
         LOGGER.debug("Raw comment response for issue {}: {}", issueKey, res);
         JsonObject jsonObject = GSON.fromJson(res, JsonObject.class);
         JsonArray commentsArray = jsonObject.getAsJsonArray("comments");
@@ -712,18 +721,24 @@ public final class IssueDao {
                         commentData.put("Author Name", null);
                     }
 
-                    // Extract created date
+                    // Extract created date-time and format as text
                     if (commentObj.has("created")) {
                         String createdStr = commentObj.get("created").getAsString();
                         try {
-                            // Parse ISO 8601 date format and convert to timestamp
-                            java.time.OffsetDateTime offsetDateTime = java.time.OffsetDateTime.parse(createdStr,
+                            // Parse ISO 8601 date-time format and format as readable text
+                            LOGGER.debug("Parsing date-time: {}", createdStr);
+
+                            // Parse the ISO 8601 date-time
+                            OffsetDateTime offsetDateTime = OffsetDateTime.parse(createdStr,
                                     JIRA_DATE_FORMATTER);
-                            long timestamp = offsetDateTime.toInstant().toEpochMilli();
-                            commentData.put("Date Created", timestamp);
-                            LOGGER.debug("Parsed created date: {} -> {}", createdStr, timestamp);
+
+                            // Format as: "MMM d, yyyy h:mm a" (e.g., "Feb 6, 2026 12:57 PM")
+                            String formattedDateTime = offsetDateTime.format(OUTPUT_DATE_FORMATTER);
+
+                            commentData.put("Date Created", formattedDateTime);
+                            LOGGER.debug("Formatted date-time: {} -> {}", createdStr, formattedDateTime);
                         } catch (Exception e) {
-                            LOGGER.error("Failed to parse created date: {}", createdStr, e);
+                            LOGGER.error("Failed to parse created date-time: {}", createdStr, e);
                             commentData.put("Date Created", null);
                         }
                     } else {
@@ -1105,30 +1120,37 @@ public final class IssueDao {
     }
 
     public Issue getIssueFinal(String key) {
-        LOGGER.info("Get Issue Final method stage 1 initialised");
+        LOGGER.debug("Fetching issue details for key: {}", key);
         try {
             String res = getIssueResponse(key);
-            LOGGER.info(" Get Final issue Fetched Response");
             JsonObject jsonObject = GSON.fromJson(res, JsonObject.class);
-            LOGGER.info("Get Final Issue JsonObject");
+
+            // Validate 'updated' field exists in the response
+            if (jsonObject.has(FIELDS)) {
+                JsonObject fields = jsonObject.getAsJsonObject(FIELDS);
+                if (!fields.has(UPDATED)) {
+                    LOGGER.warn("'updated' field NOT found in Jira API response for key: {}", key);
+                }
+            }
+
             JiraIssue issue = JiraIssue.create(jsonObject);
-            LOGGER.info("Get Final Issue After processing Jira Issue from Jon Object.");
             Issue issueObj = issue.getIssue();
 
             // If request type is a field value (like "1/2"), try to resolve it to the name
             if (issueObj.requestType != null && issueObj.requestType.contains("/")) {
-                LOGGER.info("Request type field contains value '{}', attempting to resolve to name",
-                        issueObj.requestType);
+                LOGGER.debug("Resolving request type value '{}' to name for key: {}",
+                        issueObj.requestType, key);
                 String requestTypeName = getRequestTypeNameFromIssue(key, issueObj.requestType);
                 if (requestTypeName != null) {
                     issueObj.requestType = requestTypeName;
-                    LOGGER.info("Resolved request type to name: {}", requestTypeName);
+                    LOGGER.debug("Resolved request type to: {}", requestTypeName);
                 }
             }
 
+            LOGGER.info("Retrieved issue {} - Last Modified Date: {}", key, issueObj.lastModifiedDate);
             return issueObj;
         } catch (RuntimeException cause) {
-            LOGGER.error("Error at Get Issue Final Method : {}", cause.getMessage(), cause);
+            LOGGER.warn("Error at Get Issue Final Method : {}", cause.getMessage(), cause);
         }
         return new Issue();
     }
@@ -1173,48 +1195,113 @@ public final class IssueDao {
     }
 
     public List<String> getCustomIssue(String issueKey, String customField) {
+        LOGGER.info("getCustomIssue called - issueKey: {}, customField: {}", issueKey, customField);
+
         String fieldResponse = getFieldResponse();
+        LOGGER.debug("getCustomIssue - field metadata response length: {}", fieldResponse != null ? fieldResponse.length() : "null");
+
         String key = getKeyByName(fieldResponse, customField);
+        LOGGER.info("getCustomIssue - resolved field key: {} for customField: {}", key, customField);
+
+        if (key == null) {
+            LOGGER.warn("getCustomIssue - field key is null for customField: {}. Field not found in Jira metadata.", customField);
+            return new ArrayList<>();
+        }
+
         String issueResponse = getIssueResponse(issueKey);
+        LOGGER.debug("getCustomIssue - issue response length: {}", issueResponse != null ? issueResponse.length() : "null");
+
         JsonObject jsonObject = GSON.fromJson(issueResponse, JsonObject.class);
         JsonElement jsonResponse = jsonObject.get(FIELDS).getAsJsonObject().get(key);
         List<String> outputList = new ArrayList<>();
 
         if (jsonResponse == null) {
+            LOGGER.warn("getCustomIssue - field value is null for key: {} in issue: {}. The field exists but has no value.", key, issueKey);
             return outputList;
         }
+
+        LOGGER.info("getCustomIssue - raw JSON response type: {}, content: {}", jsonResponse.getClass().getSimpleName(), jsonResponse);
+
         if (jsonResponse.isJsonObject()) {
             JsonObject obj = jsonResponse.getAsJsonObject();
-            if (obj.has(VALUE)) {
-                outputList.add(obj.get(VALUE).getAsString());
+            LOGGER.info("getCustomIssue - JsonObject detected with keys: {}", obj.keySet());
+            String extracted = extractStringFromJsonObject(obj);
+            if (extracted != null) {
+                outputList.add(extracted);
+                LOGGER.info("getCustomIssue - extracted value from JsonObject: {}", extracted);
+            } else {
+                LOGGER.warn("getCustomIssue - could not extract a string value from JsonObject. Keys: {}, Content: {}", obj.keySet(), obj);
             }
             return outputList;
         }
         if (jsonResponse.isJsonArray()) {
             JsonArray jsonArray = jsonResponse.getAsJsonArray();
+            LOGGER.info("getCustomIssue - JsonArray detected with {} elements", jsonArray.size());
             for (JsonElement element : jsonArray) {
-                if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isString()) {
+                if (element.isJsonPrimitive()) {
                     outputList.add(element.getAsString());
+                } else if (element.isJsonObject()) {
+                    String extracted = extractStringFromJsonObject(element.getAsJsonObject());
+                    if (extracted != null) {
+                        outputList.add(extracted);
+                    } else {
+                        LOGGER.warn("getCustomIssue - could not extract value from JsonArray object element. Content: {}", element);
+                    }
+                } else {
+                    LOGGER.warn("getCustomIssue - unhandled JsonArray element type: {}, Content: {}",
+                            element.getClass().getSimpleName(), element);
                 }
             }
+            LOGGER.info("getCustomIssue - extracted {} values from JsonArray", outputList.size());
             return outputList;
         }
         if (jsonResponse.isJsonPrimitive() && jsonResponse.getAsJsonPrimitive().isString()) {
             outputList.add(jsonResponse.getAsString());
+            LOGGER.info("getCustomIssue - extracted string primitive: {}", jsonResponse.getAsString());
+        } else {
+            LOGGER.warn("getCustomIssue - unhandled JSON type. isJsonPrimitive: {}, content: {}",
+                    jsonResponse.isJsonPrimitive(), jsonResponse);
         }
+
+        LOGGER.info("getCustomIssue - returning {} values for issueKey: {}, customField: {}", outputList.size(), issueKey, customField);
         return outputList;
     }
 
+    /**
+     * Extracts a meaningful string value from a JsonObject by checking common Jira field keys
+     * in priority order: value, displayName, name.
+     * Handles dropdown selects, people/user fields, components, and other complex field types.
+     */
+    private static String extractStringFromJsonObject(JsonObject obj) {
+        // Priority: value > displayName > name
+        if (obj.has(VALUE) && !obj.get(VALUE).isJsonNull()) {
+            return obj.get(VALUE).getAsString();
+        }
+        if (obj.has("displayName") && !obj.get("displayName").isJsonNull()) {
+            return obj.get("displayName").getAsString();
+        }
+        if (obj.has("name") && !obj.get("name").isJsonNull()) {
+            return obj.get("name").getAsString();
+        }
+        return null;
+    }
+
+
     public static String getKeyByName(String jsonResponse, String name) {
+        LOGGER.info("getKeyByName - searching for field name: '{}'", name);
         JSONArray jsonArray = new JSONArray(jsonResponse);
 
         for (int i = 0; i < jsonArray.length(); i++) {
             JSONObject jsonObject = jsonArray.getJSONObject(i);
             if (jsonObject.getString("name").equalsIgnoreCase(name)) {
-                return jsonObject.getString("key");
+                String key = jsonObject.getString("key");
+                String schema = jsonObject.has("schema") ? jsonObject.get("schema").toString() : "N/A";
+                LOGGER.info("getKeyByName - found match: name='{}', key='{}', schema={}", name, key, schema);
+                return key;
             }
         }
 
+        LOGGER.warn("getKeyByName - no field found matching name: '{}'. Total fields searched: {}", name, jsonArray.length());
         return null;
     }
 

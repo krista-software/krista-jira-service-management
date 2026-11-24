@@ -290,12 +290,11 @@ comprehensive user profile data including account details, contact information, 
 
 ## Technical Implementation
 
-- **Service Class**: `app.krista.extensions.devsecops.development.jira.services.UserService`
+- **Catalog Area**: `app.krista.extensions.devsecops.development.jira.catalog.OrganizationArea`
 - **DAO Class**: `app.krista.extensions.devsecops.development.jira.impl.UserDao`
 - **Entity Class**: `app.krista.extensions.devsecops.development.jira.catalog.entities.User`
 - **Validation Flow**: Input validation → User search → Field extraction → Response mapping
 - **API Endpoint**: Jira REST API v2 `/user/search` endpoint
-- **Telemetry Metrics**: Tracks user search success rates, query patterns, and usage analytics
 
 ## Troubleshooting
 

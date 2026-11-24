@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.services;
@@ -597,17 +597,27 @@ class HtmlToAdfConverterIntegrationTest {
         JsonObject paragraph = content.get(0).getAsJsonObject();
         JsonArray paragraphContent = paragraph.getAsJsonArray("content");
 
+        // The bold tag produces multiple text nodes: "Text before ", "italic", " text after"
+        // each with their respective marks (bold, bold+italic, bold)
         assertTrue(paragraphContent.size() >= 1);
 
-        JsonObject textNode = paragraphContent.get(0).getAsJsonObject();
-        assertEquals("text", textNode.get("type").getAsString());
-        assertTrue(textNode.has("marks"));
+        // Verify the first node is a text node with marks (bold)
+        JsonObject firstNode = paragraphContent.get(0).getAsJsonObject();
+        assertEquals("text", firstNode.get("type").getAsString());
+        assertTrue(firstNode.has("marks"));
 
-        // Verify the text contains all parts
-        String text = textNode.get("text").getAsString();
-        assertTrue(text.contains("Text before"));
-        assertTrue(text.contains("italic"));
-        assertTrue(text.contains("text after"));
+        // Collect all text content across all nodes to verify the full content is present
+        StringBuilder allText = new StringBuilder();
+        for (int i = 0; i < paragraphContent.size(); i++) {
+            JsonObject node = paragraphContent.get(i).getAsJsonObject();
+            if (node.has("text")) {
+                allText.append(node.get("text").getAsString());
+            }
+        }
+        String combinedText = allText.toString();
+        assertTrue(combinedText.contains("Text before"));
+        assertTrue(combinedText.contains("italic"));
+        assertTrue(combinedText.contains("text after"));
     }
 
     @Test

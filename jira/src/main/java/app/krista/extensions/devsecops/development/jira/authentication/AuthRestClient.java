@@ -13,64 +13,65 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
 
 import app.krista.extensions.devsecops.development.jira.JiraAttributes;
-import app.krista.extensions.devsecops.development.jira.util.JiraConstants;
+import app.krista.sdk.atlassian.client.AbstractBasicAuthRestClient;
+import app.krista.sdk.atlassian.error.HttpErrorMapper;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mashape.unirest.http.HttpResponse;
 import com.mashape.unirest.http.JsonNode;
-import com.mashape.unirest.http.Unirest;
-import com.mashape.unirest.http.exceptions.UnirestException;
-import org.glassfish.jersey.client.authentication.HttpAuthenticationFeature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.ws.rs.client.*;
+import javax.ws.rs.client.Entity;
+import javax.ws.rs.client.Invocation;
+import javax.ws.rs.client.WebTarget;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import java.io.File;
 import java.util.List;
 import java.util.Map;
 
-public final class AuthRestClient implements RestClient {
+/**
+ * Basic-auth (account email + API token) REST client for JSM.
+ *
+ * <p>The shared plumbing (lazy Jersey targets, query-parameter expansion,
+ * status-code translation, multipart upload) lives in the SDK's
+ * {@link AbstractBasicAuthRestClient}; this class adds the JSM Service Desk
+ * targets and the JQL/issue operations.</p>
+ */
+public final class AuthRestClient extends AbstractBasicAuthRestClient implements RestClient {
 
-    private final Map<String, Object> attributes;
+    private static final Logger LOGGER = LoggerFactory.getLogger(AuthRestClient.class);
+
+    private static final HttpErrorMapper ERROR_MAPPER = HttpErrorMapper.withDefaults()
+            .message(401, "Admin Auth Token is invalid or expired. Please regenerate your API token from "
+                    + "Atlassian account settings (id.atlassian.com → Security → API tokens).")
+            .message(403, "Access denied. The account does not have permission to perform this operation.")
+            .message(404, "Please Provide Valid Host URL")
+            .message(400, "Please Provide Valid Auth Token OR User Name");
+
     private final boolean invokeAsUser;
     private final boolean callFromValidateAttributes;
-    private WebTarget webTarget;
     private WebTarget webTargetServiceDesk;
     private WebTarget webTargetServiceManage;
-    private final Logger LOGGER = LoggerFactory.getLogger(AuthRestClient.class);
 
     public AuthRestClient(Map<String, Object> attributes, boolean invokeAsUser, boolean callFromValidateAttributes) {
-        this.attributes = attributes;
+        super(attributes, JiraAttributes.FIELD_NAMES, invokeAsUser, callFromValidateAttributes, ERROR_MAPPER);
         this.invokeAsUser = invokeAsUser;
         this.callFromValidateAttributes = callFromValidateAttributes;
     }
 
-    private WebTarget getWebTarget(Boolean invokeAsUser) {
-        // LOGGER.info("Basic Auth web target Initialised : {}",
-        // attributes.get(JiraAttributes.AUTH_TOKEN));
-        LOGGER.info("Basic Auth web target Initialised");
-        if ((invokeAsUser != null ? invokeAsUser : this.invokeAsUser) && !callFromValidateAttributes) {
+    private void checkInvokeAsUser(Boolean invokeAsUserOverride) {
+        if ((invokeAsUserOverride != null ? invokeAsUserOverride : this.invokeAsUser) && !callFromValidateAttributes) {
             throw new IllegalArgumentException(
                     "User cannot be authenticated with their own account if client ID and client secret are not provided.");
         }
-        if (webTarget == null) {
-            HttpAuthenticationFeature feature = HttpAuthenticationFeature.basic(
-                    (String) attributes.get(JiraAttributes.USER_NAME),
-                    (String) attributes.get(JiraAttributes.AUTH_TOKEN));
-            Client client = ClientBuilder.newClient();
-            client.register(feature);
-            webTarget = client.target((String) attributes.get(JiraAttributes.HOST_URL));
-        }
-        LOGGER.info("Basic Auth web target Created with HOST URL : {}", attributes.get(JiraAttributes.HOST_URL));
-        return webTarget;
     }
 
     private String getBaseUrl(String hostUrl) {
@@ -88,141 +89,65 @@ public final class AuthRestClient implements RestClient {
         return hostUrl;
     }
 
-    private WebTarget getJiraServiceManageWebTarget(Boolean invokeAsUser) {
+    /** Target for the Service Desk REST API ({@code <host>/rest/servicedeskapi}). */
+    private WebTarget getJiraServiceManageWebTarget(Boolean invokeAsUserOverride) {
         LOGGER.info("Basic Auth Service desk api Initialised");
-        if ((invokeAsUser != null ? invokeAsUser : this.invokeAsUser) && !callFromValidateAttributes) {
-            throw new IllegalArgumentException(
-                    "User cannot be authenticated with their own account if client ID and client secret are not provided.");
-        }
+        checkInvokeAsUser(invokeAsUserOverride);
         if (webTargetServiceManage == null) {
-            HttpAuthenticationFeature feature = HttpAuthenticationFeature.basic(
-                    (String) attributes.get(JiraAttributes.USER_NAME),
-                    (String) attributes.get(JiraAttributes.AUTH_TOKEN));
-            Client client = ClientBuilder.newClient();
-            client.register(feature);
-
-            String hostUrl = (String) attributes.get(JiraAttributes.HOST_URL);
-            String baseUrl = getBaseUrl(hostUrl);
-            webTargetServiceManage = client.target(baseUrl + "/rest/servicedeskapi");
+            String baseUrl = getBaseUrl((String) getAttributes().get(JiraAttributes.HOST_URL));
+            webTargetServiceManage = createTarget(baseUrl + "/rest/servicedeskapi");
         }
         LOGGER.info("Basic Auth Service Created on : {}", webTargetServiceManage.getUri());
         return webTargetServiceManage;
     }
 
-    private WebTarget getJiraServiceAPIWebTarget(Boolean invokeAsUser) {
+    /** Target for the legacy Service Desk management API ({@code <host>/rest/servicedesk/1/servicedesk}). */
+    private WebTarget getJiraServiceAPIWebTarget(Boolean invokeAsUserOverride) {
         LOGGER.info("Basic Auth Service Desk api Initialised");
-        if ((invokeAsUser != null ? invokeAsUser : this.invokeAsUser) && !callFromValidateAttributes) {
-            throw new IllegalArgumentException(
-                    "User cannot be authenticated with their own account if client ID and client secret are not provided.");
-        }
+        checkInvokeAsUser(invokeAsUserOverride);
         if (webTargetServiceDesk == null) {
-            HttpAuthenticationFeature feature = HttpAuthenticationFeature.basic(
-                    (String) attributes.get(JiraAttributes.USER_NAME),
-                    (String) attributes.get(JiraAttributes.AUTH_TOKEN));
-            Client client = ClientBuilder.newClient();
-            client.register(feature);
-
-            String hostUrl = (String) attributes.get(JiraAttributes.HOST_URL);
-            String baseUrl = getBaseUrl(hostUrl);
-            webTargetServiceDesk = client.target(baseUrl + "/rest/servicedesk/1/servicedesk");
+            String baseUrl = getBaseUrl((String) getAttributes().get(JiraAttributes.HOST_URL));
+            webTargetServiceDesk = createTarget(baseUrl + "/rest/servicedesk/1/servicedesk");
         }
         LOGGER.info("Basic Auth Service Desk Created on : {}", webTargetServiceDesk.getUri());
         return webTargetServiceDesk;
     }
 
     @Override
-    public Invocation.Builder getResourceInvoker(String resource, Map<String, Object> queryParams) {
-        LOGGER.info("Basic Auth Web Target Default Invocation Builder Resource Endpoint : {}", resource);
-        WebTarget resourceTarget = getWebTarget(null).path(resource);
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
-        }
-        LOGGER.info("Basic auth Default Parameter mapped to header");
-        return resourceTarget.request(MediaType.APPLICATION_JSON).header("Content-Type", "application/json");
-    }
-
-    @Override
     public Invocation.Builder getJiraServiceResourceInvoker(String resource, Map<String, Object> queryParams) {
         LOGGER.info("Basic Auth Service Invocation Builder Resource Endpoint : {}", resource);
-        WebTarget resourceTarget = getJiraServiceManageWebTarget(null).path(resource);
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
-        }
-        LOGGER.info("Basic auth Parameter mapped to header");
+        WebTarget resourceTarget = applyQueryParams(getJiraServiceManageWebTarget(null).path(resource), queryParams);
         return resourceTarget.request(MediaType.APPLICATION_JSON).header("Content-Type", "application/json");
-    }
-
-    public <T> T fetch(String resource, Map<String, Object> queryParams, Class<T> type) {
-        LOGGER.info("Basic Auth Default fetch Jira Resource Endpoint : {}", resource);
-        if (resource == null)
-            throw new IllegalArgumentException("resource could not be null");
-        WebTarget resourceTarget = getWebTarget(null).path(resource);
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
-        }
-        LOGGER.info("Web target Default received at fetchJira");
-        Invocation.Builder requestBuilder = resourceTarget.request(MediaType.APPLICATION_JSON);
-        Response response = requestBuilder.get();
-        LOGGER.info("response executed successfully at fetchJira Default");
-        T entityType = response.readEntity(type);
-        if (response.getStatusInfo().getFamily().equals(Response.Status.Family.SUCCESSFUL)) {
-            return entityType;
-        } else if (response.getStatus() == 404) {
-            throw new IllegalStateException("Please Provide Valid Host URL");
-        } else if (response.getStatus() == 400) {
-            throw new IllegalStateException("Please Provide Valid Auth Token OR User Name");
-        }
-        throw new IllegalStateException((String) entityType);
-
     }
 
     @Override
     public <T> T fetchMiscellaneousService(String resource, Map<String, Object> queryParams, Class<T> type) {
         LOGGER.info("Basic Auth fetch fetchMiscellaneousService Jira Resource Endpoint : {}", resource);
-        if (resource == null)
+        if (resource == null) {
             throw new IllegalArgumentException("resource could not be null");
-        WebTarget resourceTarget = getJiraServiceAPIWebTarget(null).path(resource);
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
         }
-        LOGGER.info("Web target received at fetchMiscellaneousService");
-        Invocation.Builder requestBuilder = resourceTarget.request(MediaType.APPLICATION_JSON);
-        Response response = requestBuilder.get();
-        LOGGER.info("response executed successfully at fetchMiscellaneousService");
-        T entityType = response.readEntity(type);
+        WebTarget resourceTarget = applyQueryParams(getJiraServiceAPIWebTarget(null).path(resource), queryParams);
+        Response response = resourceTarget.request(MediaType.APPLICATION_JSON).get();
+        T entity = response.readEntity(type);
         if (response.getStatusInfo().getFamily().equals(Response.Status.Family.SUCCESSFUL)) {
-            return entityType;
-        } else if (response.getStatus() == 404) {
-            throw new IllegalStateException("Please Provide Valid Host URL");
-        } else if (response.getStatus() == 400) {
-            throw new IllegalStateException("Please Provide Valid Auth Token OR User Name");
+            return entity;
         }
-        throw new IllegalStateException((String) entityType);
-
+        throw getErrorMapper().toException(response.getStatus(), entity instanceof String body ? body : null);
     }
 
     @Override
     public <T> T fetchJiraService(String resource, Map<String, Object> queryParams, Class<T> type) {
         LOGGER.info("Basic Auth fetch Jira Service Resource Endpoint : {}", resource);
-        if (resource == null)
+        if (resource == null) {
             throw new IllegalArgumentException("resource could not be null");
-        WebTarget resourceTarget = getJiraServiceManageWebTarget(null).path(resource);
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
         }
-        LOGGER.info("Web target received at fetchJira Service");
-        Invocation.Builder requestBuilder = resourceTarget.request(MediaType.APPLICATION_JSON);
-        Response response = requestBuilder.get();
-        LOGGER.info("response executed successfully at fetchJira Service");
-        T entityType = response.readEntity(type);
+        WebTarget resourceTarget = applyQueryParams(getJiraServiceManageWebTarget(null).path(resource), queryParams);
+        Response response = resourceTarget.request(MediaType.APPLICATION_JSON).get();
+        T entity = response.readEntity(type);
         if (response.getStatusInfo().getFamily().equals(Response.Status.Family.SUCCESSFUL)) {
-            return entityType;
-        } else if (response.getStatus() == 404) {
-            throw new IllegalStateException("Please Provide Valid Host URL");
-        } else if (response.getStatus() == 400) {
-            throw new IllegalStateException("Please Provide Valid Auth Token OR User Name");
+            return entity;
         }
-        throw new IllegalStateException((String) entityType);
+        throw getErrorMapper().toException(response.getStatus(), entity instanceof String body ? body : null);
     }
 
     /**
@@ -234,7 +159,6 @@ public final class AuthRestClient implements RestClient {
      * @param invokerId denotes invoker information.
      * @return String of JSON which contain metaData of JQL.
      */
-
     @Override
     public String parseAndValidateJQL(String jql, Boolean invokeAsUser, String accountId, String invokerId) {
         WebTarget resourceTarget = getWebTarget(invokeAsUser).path("jql/parse");
@@ -271,9 +195,7 @@ public final class AuthRestClient implements RestClient {
     }
 
     private <T> T fetchIssue(Map<String, Object> queryParams, Class<T> type, WebTarget resourceTarget) {
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
-        }
+        resourceTarget = applyQueryParams(resourceTarget, queryParams);
         Invocation.Builder invoker = resourceTarget.request(MediaType.APPLICATION_JSON);
         Response response = invoker.get();
         T entityType = response.readEntity(type);
@@ -291,25 +213,7 @@ public final class AuthRestClient implements RestClient {
         if (files == null || files.isEmpty()) {
             throw new IllegalArgumentException("file not found");
         }
-        String callUrl = attributes.get(JiraAttributes.HOST_URL) + "/issue/" + resource + "/attachments";
-        HttpResponse<JsonNode> response;
-        try {
-            response = Unirest.post(callUrl)
-                    .basicAuth((String) attributes.get(JiraAttributes.USER_NAME),
-                            (String) attributes.get(JiraAttributes.AUTH_TOKEN))
-                    .header(JiraConstants.ACCEPT, MediaType.APPLICATION_JSON)
-                    .header(JiraConstants.X_ATLASSIAN_TOKEN, JiraConstants.NO_CHECK)
-                    .field("file", files)
-                    .asJson();
-        } catch (UnirestException cause) {
-            throw new IllegalStateException(cause);
-        }
-        return response;
+        String callUrl = getAttributes().get(JiraAttributes.HOST_URL) + "/issue/" + resource + "/attachments";
+        return uploadMultipart(callUrl, files);
     }
-
-    @Override
-    public String getJiraAccessToken() {
-        return null;
-    }
-
 }

@@ -13,11 +13,13 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.api;
 
+import app.krista.extensions.devsecops.development.jira.mcp.JsmMcpSetupResource;
+import app.krista.sdk.atlassian.extension.authentication.AtlassianManagedCallbackResource;
 import org.jvnet.hk2.annotations.ContractsProvided;
 import org.jvnet.hk2.annotations.Service;
 
@@ -32,7 +34,10 @@ public final class JiraApplication extends Application {
 
     @Override
     public Set<Class<?>> getClasses() {
-        return Set.of(AuthenticationResource.class, ListenerResource.class);
+        return Set.of(AuthenticationResource.class, ListenerResource.class,
+                JsmAuthUiResource.class, JsmAuditResource.class,
+                JsmMcpSetupResource.class,
+                AtlassianManagedCallbackResource.class);
     }
 
 }

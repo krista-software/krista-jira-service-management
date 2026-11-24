@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.impl;
@@ -310,6 +310,148 @@ class UserDaoIntegrationTest extends BaseIntegrationTest {
         assertEquals("123", user.accountId);
         assertEquals("Test User", user.name);
         assertEquals("", user.email); // Should be empty string when missing
+    }
+
+    @Test
+    @DisplayName("Should get user by email or name - found by email")
+    void testGetUserByEmailOrName_FoundByEmail() {
+        JsonArray usersArray = new JsonArray();
+        usersArray.add(createUserJson("123", "john.doe@example.com", "John Doe"));
+
+        when(mockRestClient.fetch(eq("user/search"), any(Map.class), eq(String.class)))
+                .thenReturn(usersArray.toString());
+
+        User user = userDao.getUserByEmailOrName("john.doe@example.com");
+
+        assertNotNull(user);
+        assertEquals("123", user.accountId);
+        assertEquals("john.doe@example.com", user.email);
+        assertEquals("John Doe", user.name);
+        verify(mockRestClient).fetch(eq("user/search"), argThat(map ->
+            map.get("query").equals("john.doe@example.com")), eq(String.class));
+    }
+
+    @Test
+    @DisplayName("Should get user by email or name - found by name")
+    void testGetUserByEmailOrName_FoundByName() {
+        JsonArray usersArray = new JsonArray();
+        usersArray.add(createUserJson("456", "jane.smith@example.com", "Jane Smith"));
+
+        when(mockRestClient.fetch(eq("user/search"), any(Map.class), eq(String.class)))
+                .thenReturn(usersArray.toString());
+
+        User user = userDao.getUserByEmailOrName("Jane Smith");
+
+        assertNotNull(user);
+        assertEquals("456", user.accountId);
+        assertEquals("jane.smith@example.com", user.email);
+        assertEquals("Jane Smith", user.name);
+        verify(mockRestClient).fetch(eq("user/search"), argThat(map ->
+            map.get("query").equals("Jane Smith")), eq(String.class));
+    }
+
+    @Test
+    @DisplayName("Should get user by email or name - returns first match when multiple found")
+    void testGetUserByEmailOrName_MultipleMatches() {
+        JsonArray usersArray = new JsonArray();
+        usersArray.add(createUserJson("123", "john.doe@example.com", "John Doe"));
+        usersArray.add(createUserJson("456", "john.smith@example.com", "John Smith"));
+
+        when(mockRestClient.fetch(eq("user/search"), any(Map.class), eq(String.class)))
+                .thenReturn(usersArray.toString());
+
+        User user = userDao.getUserByEmailOrName("john");
+
+        assertNotNull(user);
+        assertEquals("123", user.accountId); // Should return first match
+        assertEquals("john.doe@example.com", user.email);
+        assertEquals("John Doe", user.name);
+    }
+
+    @Test
+    @DisplayName("Should get user by email or name - returns null when not found")
+    void testGetUserByEmailOrName_NotFound() {
+        JsonArray usersArray = new JsonArray();
+
+        when(mockRestClient.fetch(eq("user/search"), any(Map.class), eq(String.class)))
+                .thenReturn(usersArray.toString());
+
+        User user = userDao.getUserByEmailOrName("nonexistent@example.com");
+
+        assertNull(user);
+        verify(mockRestClient).fetch(eq("user/search"), argThat(map ->
+            map.get("query").equals("nonexistent@example.com")), eq(String.class));
+    }
+
+    @Test
+    @DisplayName("Should get user by email or name - returns null for null query")
+    void testGetUserByEmailOrName_NullQuery() {
+        User user = userDao.getUserByEmailOrName(null);
+
+        assertNull(user);
+        verify(mockRestClient, never()).fetch(anyString(), any(Map.class), eq(String.class));
+    }
+
+    @Test
+    @DisplayName("Should get user by email or name - returns null for empty query")
+    void testGetUserByEmailOrName_EmptyQuery() {
+        User user = userDao.getUserByEmailOrName("");
+
+        assertNull(user);
+        verify(mockRestClient, never()).fetch(anyString(), any(Map.class), eq(String.class));
+    }
+
+    @Test
+    @DisplayName("Should get user by email or name - trims whitespace from query")
+    void testGetUserByEmailOrName_TrimsWhitespace() {
+        JsonArray usersArray = new JsonArray();
+        usersArray.add(createUserJson("123", "test@example.com", "Test User"));
+
+        when(mockRestClient.fetch(eq("user/search"), any(Map.class), eq(String.class)))
+                .thenReturn(usersArray.toString());
+
+        User user = userDao.getUserByEmailOrName("  test@example.com  ");
+
+        assertNotNull(user);
+        assertEquals("123", user.accountId);
+        verify(mockRestClient).fetch(eq("user/search"), argThat(map ->
+            map.get("query").equals("test@example.com")), eq(String.class));
+    }
+
+    @Test
+    @DisplayName("Should get user by email or name - returns null for whitespace-only query")
+    void testGetUserByEmailOrName_WhitespaceOnlyQuery() {
+        User user = userDao.getUserByEmailOrName("   ");
+
+        assertNull(user);
+        verify(mockRestClient, never()).fetch(anyString(), any(Map.class), eq(String.class));
+    }
+
+    @Test
+    @DisplayName("Should get user by email or name - handles MustAuthorizeException")
+    void testGetUserByEmailOrName_MustAuthorizeException() {
+        when(mockRestClient.fetch(eq("user/search"), any(Map.class), eq(String.class)))
+                .thenThrow(new MustAuthorizeException("Not authorized"));
+
+        assertThrows(MustAuthorizeException.class, () -> {
+            userDao.getUserByEmailOrName("test@example.com");
+        });
+    }
+
+    @Test
+    @DisplayName("Should get user by email or name - handles search with special characters")
+    void testGetUserByEmailOrName_SpecialCharacters() {
+        JsonArray usersArray = new JsonArray();
+        usersArray.add(createUserJson("123", "user+test@example.com", "User Test"));
+
+        when(mockRestClient.fetch(eq("user/search"), any(Map.class), eq(String.class)))
+                .thenReturn(usersArray.toString());
+
+        User user = userDao.getUserByEmailOrName("user+test@example.com");
+
+        assertNotNull(user);
+        assertEquals("123", user.accountId);
+        assertEquals("user+test@example.com", user.email);
     }
 
     private JsonObject createUserJson(String accountId, String email, String displayName) {

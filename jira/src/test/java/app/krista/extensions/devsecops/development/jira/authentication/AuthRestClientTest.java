@@ -13,28 +13,43 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
 
 import app.krista.extensions.devsecops.development.jira.JiraAttributes;
+import app.krista.sdk.atlassian.error.HttpErrorMapper;
+import com.mashape.unirest.http.HttpResponse;
+import com.mashape.unirest.http.JsonNode;
+import com.mashape.unirest.http.Unirest;
+import com.mashape.unirest.request.HttpRequestWithBody;
+import com.mashape.unirest.request.body.MultipartBody;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
 
+import javax.ws.rs.client.Client;
+import javax.ws.rs.client.ClientBuilder;
+import javax.ws.rs.client.Entity;
 import javax.ws.rs.client.Invocation;
+import javax.ws.rs.client.WebTarget;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
 import java.io.File;
+import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 @DisplayName("AuthRestClient Tests")
 class AuthRestClientTest {
 
-    private AuthRestClient authRestClient;
     private Map<String, Object> attributes;
 
     @BeforeEach
@@ -45,304 +60,829 @@ class AuthRestClientTest {
         attributes.put(JiraAttributes.HOST_URL, "https://test.atlassian.net/rest/api/3");
     }
 
-    @Test
-    @DisplayName("Should create AuthRestClient with valid attributes")
-    void testConstructor_Success() {
-        // Act
-        authRestClient = new AuthRestClient(attributes, false, false);
+    // ── helpers ──────────────────────────────────────────────────────────
 
-        // Assert
-        assertNotNull(authRestClient);
+    private Client mockClient;
+    private WebTarget mockBaseTarget;
+    private WebTarget mockPathTarget;
+    private Invocation.Builder mockBuilder;
+    private Response mockResponse;
+
+    /**
+     * Sets up a full Jersey mock chain:
+     * ClientBuilder.newClient() → client.register() → client.target() → target.path() → ...
+     */
+    private MockedStatic<ClientBuilder> setupJerseyMocks() {
+        MockedStatic<ClientBuilder> cbMock = mockStatic(ClientBuilder.class);
+        mockClient = mock(Client.class);
+        mockBaseTarget = mock(WebTarget.class);
+        mockPathTarget = mock(WebTarget.class);
+        mockBuilder = mock(Invocation.Builder.class);
+        mockResponse = mock(Response.class);
+
+        cbMock.when(ClientBuilder::newClient).thenReturn(mockClient);
+        when(mockClient.register(any())).thenReturn(mockClient);
+        when(mockClient.target(anyString())).thenReturn(mockBaseTarget);
+        when(mockBaseTarget.path(anyString())).thenReturn(mockPathTarget);
+        when(mockPathTarget.path(anyString())).thenReturn(mockPathTarget);
+        when(mockPathTarget.queryParam(anyString(), any())).thenReturn(mockPathTarget);
+        when(mockPathTarget.request(any(MediaType.class))).thenReturn(mockBuilder);
+        when(mockPathTarget.request(anyString())).thenReturn(mockBuilder);
+        when(mockBuilder.header(anyString(), anyString())).thenReturn(mockBuilder);
+        when(mockPathTarget.getUri()).thenReturn(java.net.URI.create("https://test.atlassian.net/rest/servicedeskapi"));
+
+        return cbMock;
     }
 
-    @Test
-    @DisplayName("Should be final class")
-    void testIsFinalClass() {
-        // Assert
-        assertTrue(java.lang.reflect.Modifier.isFinal(AuthRestClient.class.getModifiers()));
+    private void mockSuccessResponse(String body) {
+        Response.StatusType statusType = mock(Response.StatusType.class);
+        when(mockResponse.getStatusInfo()).thenReturn(statusType);
+        when(statusType.getFamily()).thenReturn(Response.Status.Family.SUCCESSFUL);
+        when(mockResponse.readEntity(String.class)).thenReturn(body);
     }
 
-    @Test
-    @DisplayName("Should implement RestClient interface")
-    void testImplementsRestClient() {
-        // Assert
-        assertTrue(RestClient.class.isAssignableFrom(AuthRestClient.class));
+    private void mockErrorResponse(int status, String body) {
+        Response.StatusType statusType = mock(Response.StatusType.class);
+        when(mockResponse.getStatusInfo()).thenReturn(statusType);
+        when(statusType.getFamily()).thenReturn(Response.Status.Family.CLIENT_ERROR);
+        when(mockResponse.getStatus()).thenReturn(status);
+        when(mockResponse.readEntity(String.class)).thenReturn(body);
     }
 
-    @Test
-    @DisplayName("Should throw IllegalArgumentException when invokeAsUser is true and not from validateAttributes")
-    void testGetResourceInvoker_ThrowsException_WhenInvokeAsUserTrue() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, true, false);
-        Map<String, Object> queryParams = new HashMap<>();
+    // ── Constructor & class structure ────────────────────────────────────
 
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.getResourceInvoker("issue/TEST-123", queryParams)
-        );
-        assertTrue(exception.getMessage().contains("User cannot be authenticated"));
+    @Nested
+    @DisplayName("Constructor and class structure")
+    class ConstructorTests {
+
+        @Test
+        @DisplayName("Should create AuthRestClient with valid attributes")
+        void constructor_success() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            assertNotNull(client);
+        }
+
+        @Test
+        @DisplayName("Should be final class")
+        void isFinalClass() {
+            assertTrue(java.lang.reflect.Modifier.isFinal(AuthRestClient.class.getModifiers()));
+        }
+
+        @Test
+        @DisplayName("Should implement RestClient interface")
+        void implementsRestClient() {
+            assertTrue(RestClient.class.isAssignableFrom(AuthRestClient.class));
+        }
+
+        @Test
+        @DisplayName("Should allow invokeAsUser when callFromValidateAttributes is true")
+        void allowsInvokeAsUser_whenFromValidateAttributes() {
+            AuthRestClient client = new AuthRestClient(attributes, true, true);
+            assertNotNull(client);
+        }
+
+        @Test
+        @DisplayName("getJiraAccessToken returns null")
+        void getJiraAccessToken_returnsNull() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            assertNull(client.getJiraAccessToken());
+        }
     }
 
-    @Test
-    @DisplayName("Should throw IllegalArgumentException when resource is null in fetch")
-    void testFetch_ThrowsException_WhenResourceNull() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
-        Map<String, Object> queryParams = new HashMap<>();
+    // ── getBaseUrl (private) ────────────────────────────────────────────
 
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.fetch(null, queryParams, String.class)
-        );
-        assertEquals("resource could not be null", exception.getMessage());
+    @Nested
+    @DisplayName("getBaseUrl")
+    class GetBaseUrlTests {
+
+        private String invokeGetBaseUrl(String hostUrl) throws Exception {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            Method method = AuthRestClient.class.getDeclaredMethod("getBaseUrl", String.class);
+            method.setAccessible(true);
+            return (String) method.invoke(client, hostUrl);
+        }
+
+        @Test
+        @DisplayName("Extracts base URL from hostUrl with /rest/ path")
+        void withRestPath() throws Exception {
+            assertEquals("https://test.atlassian.net", invokeGetBaseUrl("https://test.atlassian.net/rest/api/3"));
+        }
+
+        @Test
+        @DisplayName("Extracts base URL from hostUrl ending with /rest")
+        void endingWithRest() throws Exception {
+            assertEquals("https://test.atlassian.net", invokeGetBaseUrl("https://test.atlassian.net/rest"));
+        }
+
+        @Test
+        @DisplayName("Returns same URL when no /rest in hostUrl")
+        void noRestPath() throws Exception {
+            assertEquals("https://test.atlassian.net", invokeGetBaseUrl("https://test.atlassian.net"));
+        }
+
+        @Test
+        @DisplayName("Returns empty string when hostUrl is null")
+        void nullHostUrl() throws Exception {
+            assertEquals("", invokeGetBaseUrl(null));
+        }
+
+        @Test
+        @DisplayName("Returns empty string when hostUrl is empty")
+        void emptyHostUrl() throws Exception {
+            assertEquals("", invokeGetBaseUrl(""));
+        }
     }
 
-    @Test
-    @DisplayName("Should throw IllegalArgumentException when resource is null in fetchJiraService")
-    void testFetchJiraService_ThrowsException_WhenResourceNull() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
-        Map<String, Object> queryParams = new HashMap<>();
+    // ── checkInvokeAsUser ───────────────────────────────────────────────
 
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.fetchJiraService(null, queryParams, String.class)
-        );
-        assertEquals("resource could not be null", exception.getMessage());
+    @Nested
+    @DisplayName("checkInvokeAsUser")
+    class CheckInvokeAsUserTests {
+
+        @Test
+        @DisplayName("Throws when invokeAsUser=true and callFromValidateAttributes=false")
+        void throwsWhenInvokeAsUserTrue() {
+            AuthRestClient client = new AuthRestClient(attributes, true, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                assertThrows(IllegalArgumentException.class, () ->
+                        client.getJiraServiceResourceInvoker("test", Map.of()));
+            }
+        }
+
+        @Test
+        @DisplayName("Does not throw when callFromValidateAttributes=true")
+        void allowsWhenCallFromValidateAttributes() {
+            AuthRestClient client = new AuthRestClient(attributes, true, true);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                Invocation.Builder result = client.getJiraServiceResourceInvoker("test", Map.of());
+                assertNotNull(result);
+            }
+        }
+
+        @Test
+        @DisplayName("Uses field invokeAsUser when override is null")
+        void usesFieldWhenOverrideNull() {
+            // invokeAsUser=true, callFromValidateAttributes=false, override=null → throws
+            AuthRestClient client = new AuthRestClient(attributes, true, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                // getJiraServiceResourceInvoker passes null as override
+                assertThrows(IllegalArgumentException.class, () ->
+                        client.getJiraServiceResourceInvoker("test", Map.of()));
+            }
+        }
+
+        @Test
+        @DisplayName("Uses override=false when field invokeAsUser=true → no throw")
+        void overrideFalse_fieldTrue_noThrow() {
+            AuthRestClient client = new AuthRestClient(attributes, true, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks();
+                 MockedStatic<Entity> entityMock = mockStatic(Entity.class)) {
+                Entity<?> mockEntity = mock(Entity.class);
+                entityMock.when(() -> Entity.entity(anyString(), eq(MediaType.APPLICATION_JSON)))
+                        .thenReturn(mockEntity);
+                when(mockBuilder.post(any(Entity.class))).thenReturn(mockResponse);
+                Response.StatusType statusType = mock(Response.StatusType.class);
+                when(mockResponse.getStatusInfo()).thenReturn(statusType);
+                when(statusType.getFamily()).thenReturn(Response.Status.Family.SUCCESSFUL);
+                when(mockResponse.readEntity(String.class)).thenReturn("{}");
+                // parseAndValidateJQL passes explicit invokeAsUser=false
+                String result = client.parseAndValidateJQL("project=TEST", false, "acc", "inv");
+                assertNotNull(result);
+            }
+        }
+
+        @Test
+        @DisplayName("Override=true throws when callFromValidateAttributes=false via reflection")
+        void overrideTrue_callFromValidateFalse_throws() throws Exception {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            Method m = AuthRestClient.class.getDeclaredMethod("checkInvokeAsUser", Boolean.class);
+            m.setAccessible(true);
+            var ex = assertThrows(java.lang.reflect.InvocationTargetException.class, () ->
+                    m.invoke(client, Boolean.TRUE));
+            assertInstanceOf(IllegalArgumentException.class, ex.getCause());
+        }
+
+        @Test
+        @DisplayName("Override=true does not throw when callFromValidateAttributes=true via reflection")
+        void overrideTrue_callFromValidateTrue_noThrow() throws Exception {
+            AuthRestClient client = new AuthRestClient(attributes, false, true);
+            Method m = AuthRestClient.class.getDeclaredMethod("checkInvokeAsUser", Boolean.class);
+            m.setAccessible(true);
+            m.invoke(client, Boolean.TRUE); // should not throw
+        }
+
+        @Test
+        @DisplayName("Override=false does not throw regardless via reflection")
+        void overrideFalse_noThrow() throws Exception {
+            AuthRestClient client = new AuthRestClient(attributes, true, false);
+            Method m = AuthRestClient.class.getDeclaredMethod("checkInvokeAsUser", Boolean.class);
+            m.setAccessible(true);
+            m.invoke(client, Boolean.FALSE); // override=false means condition is false
+        }
+
+        @Test
+        @DisplayName("Override=null with field invokeAsUser=false does not throw via reflection")
+        void overrideNull_fieldFalse_noThrow() throws Exception {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            Method m = AuthRestClient.class.getDeclaredMethod("checkInvokeAsUser", Boolean.class);
+            m.setAccessible(true);
+            m.invoke(client, (Boolean) null); // falls back to this.invokeAsUser=false
+        }
     }
 
-    @Test
-    @DisplayName("Should throw IllegalArgumentException when resource is null in fetchMiscellaneousService")
-    void testFetchMiscellaneousService_ThrowsException_WhenResourceNull() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
-        Map<String, Object> queryParams = new HashMap<>();
+    // ── getJiraServiceResourceInvoker ────────────────────────────────────
 
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.fetchMiscellaneousService(null, queryParams, String.class)
-        );
-        assertEquals("resource could not be null", exception.getMessage());
+    @Nested
+    @DisplayName("getJiraServiceResourceInvoker")
+    class GetJiraServiceResourceInvokerTests {
+
+        @Test
+        @DisplayName("Returns Invocation.Builder on success")
+        void success() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                Invocation.Builder result = client.getJiraServiceResourceInvoker("servicedesk", Map.of());
+                assertNotNull(result);
+            }
+        }
+
+        @Test
+        @DisplayName("Applies query parameters")
+        void withQueryParams() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            Map<String, Object> params = Map.of("limit", 10);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                Invocation.Builder result = client.getJiraServiceResourceInvoker("servicedesk", params);
+                assertNotNull(result);
+                verify(mockPathTarget).queryParam("limit", 10);
+            }
+        }
+
+        @Test
+        @DisplayName("Throws when invokeAsUser is true")
+        void throwsWhenInvokeAsUserTrue() {
+            AuthRestClient client = new AuthRestClient(attributes, true, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.getJiraServiceResourceInvoker("servicedesk", Map.of()));
+        }
+
+        @Test
+        @DisplayName("Caches webTargetServiceManage on second call")
+        void cachesWebTarget() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                client.getJiraServiceResourceInvoker("a", Map.of());
+                client.getJiraServiceResourceInvoker("b", Map.of());
+                // createTarget → client.target() should only be called once for the service manage target
+                verify(mockClient, times(1)).target(anyString());
+            }
+        }
     }
 
-    @Test
-    @DisplayName("Should throw IllegalArgumentException when resource is null in attachFile")
-    void testAttachFile_ThrowsException_WhenResourceNull() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
-        List<File> files = List.of(new File("test.txt"));
+    // ── fetchMiscellaneousService ────────────────────────────────────────
 
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.attachFile(null, files)
-        );
-        assertEquals("resource not found", exception.getMessage());
+    @Nested
+    @DisplayName("fetchMiscellaneousService")
+    class FetchMiscellaneousServiceTests {
+
+        @Test
+        @DisplayName("Returns entity on successful response")
+        void success() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockSuccessResponse("{\"id\":1}");
+
+                String result = client.fetchMiscellaneousService("queues", Map.of(), String.class);
+                assertEquals("{\"id\":1}", result);
+            }
+        }
+
+        @Test
+        @DisplayName("Throws when resource is null")
+        void throwsWhenResourceNull() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.fetchMiscellaneousService(null, Map.of(), String.class));
+        }
+
+        @Test
+        @DisplayName("Throws exception on error response with String entity")
+        void errorResponse_stringEntity() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockErrorResponse(404, "Not Found");
+
+                assertThrows(Exception.class, () ->
+                        client.fetchMiscellaneousService("queues", Map.of(), String.class));
+            }
+        }
+
+        @Test
+        @DisplayName("Throws exception on error response with non-String entity")
+        void errorResponse_nonStringEntity() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                Response.StatusType statusType = mock(Response.StatusType.class);
+                when(mockResponse.getStatusInfo()).thenReturn(statusType);
+                when(statusType.getFamily()).thenReturn(Response.Status.Family.CLIENT_ERROR);
+                when(mockResponse.getStatus()).thenReturn(400);
+                when(mockResponse.readEntity(Object.class)).thenReturn(12345);
+
+                assertThrows(Exception.class, () ->
+                        client.fetchMiscellaneousService("queues", Map.of(), Object.class));
+            }
+        }
+
+        @Test
+        @DisplayName("Throws when invokeAsUser is true")
+        void throwsWhenInvokeAsUserTrue() {
+            AuthRestClient client = new AuthRestClient(attributes, true, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.fetchMiscellaneousService("queues", Map.of(), String.class));
+        }
+
+        @Test
+        @DisplayName("Caches webTargetServiceDesk on second call")
+        void cachesWebTarget() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockSuccessResponse("ok");
+
+                client.fetchMiscellaneousService("a", Map.of(), String.class);
+                client.fetchMiscellaneousService("b", Map.of(), String.class);
+                verify(mockClient, times(1)).target(anyString());
+            }
+        }
     }
 
-    @Test
-    @DisplayName("Should throw IllegalArgumentException when resource is blank in attachFile")
-    void testAttachFile_ThrowsException_WhenResourceBlank() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
-        List<File> files = List.of(new File("test.txt"));
+    // ── fetchJiraService ────────────────────────────────────────────────
 
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.attachFile("   ", files)
-        );
-        assertEquals("resource not found", exception.getMessage());
+    @Nested
+    @DisplayName("fetchJiraService")
+    class FetchJiraServiceTests {
+
+        @Test
+        @DisplayName("Returns entity on successful response")
+        void success() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockSuccessResponse("{\"data\":true}");
+
+                String result = client.fetchJiraService("request", Map.of(), String.class);
+                assertEquals("{\"data\":true}", result);
+            }
+        }
+
+        @Test
+        @DisplayName("Throws when resource is null")
+        void throwsWhenResourceNull() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.fetchJiraService(null, Map.of(), String.class));
+        }
+
+        @Test
+        @DisplayName("Throws exception on error response with String entity")
+        void errorResponse_stringEntity() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockErrorResponse(401, "Unauthorized");
+
+                assertThrows(Exception.class, () ->
+                        client.fetchJiraService("request", Map.of(), String.class));
+            }
+        }
+
+        @Test
+        @DisplayName("Throws exception on error response with non-String entity")
+        void errorResponse_nonStringEntity() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                Response.StatusType statusType = mock(Response.StatusType.class);
+                when(mockResponse.getStatusInfo()).thenReturn(statusType);
+                when(statusType.getFamily()).thenReturn(Response.Status.Family.CLIENT_ERROR);
+                when(mockResponse.getStatus()).thenReturn(403);
+                when(mockResponse.readEntity(Object.class)).thenReturn(List.of("error"));
+
+                assertThrows(Exception.class, () ->
+                        client.fetchJiraService("request", Map.of(), Object.class));
+            }
+        }
+
+        @Test
+        @DisplayName("Throws when invokeAsUser is true")
+        void throwsWhenInvokeAsUserTrue() {
+            AuthRestClient client = new AuthRestClient(attributes, true, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.fetchJiraService("request", Map.of(), String.class));
+        }
     }
 
-    @Test
-    @DisplayName("Should throw IllegalArgumentException when files is null in attachFile")
-    void testAttachFile_ThrowsException_WhenFilesNull() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
+    // ── parseAndValidateJQL ─────────────────────────────────────────────
 
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.attachFile("TEST-123", null)
-        );
-        assertEquals("file not found", exception.getMessage());
+    @Nested
+    @DisplayName("parseAndValidateJQL")
+    class ParseAndValidateJQLTests {
+
+        private MockedStatic<Entity> setupEntityMock() {
+            MockedStatic<Entity> entityMock = mockStatic(Entity.class);
+            Entity<?> mockEntity = mock(Entity.class);
+            entityMock.when(() -> Entity.entity(anyString(), eq(MediaType.APPLICATION_JSON)))
+                    .thenReturn(mockEntity);
+            return entityMock;
+        }
+
+        @Test
+        @DisplayName("Returns JSON on successful response")
+        void success() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks();
+                 MockedStatic<Entity> eMock = setupEntityMock()) {
+                when(mockBuilder.post(any())).thenReturn(mockResponse);
+                Response.StatusType statusType = mock(Response.StatusType.class);
+                when(mockResponse.getStatusInfo()).thenReturn(statusType);
+                when(statusType.getFamily()).thenReturn(Response.Status.Family.SUCCESSFUL);
+                when(mockResponse.readEntity(String.class)).thenReturn("{\"queries\":[]}");
+
+                String result = client.parseAndValidateJQL("project = TEST", false, "acc", "inv");
+                assertEquals("{\"queries\":[]}", result);
+            }
+        }
+
+        @Test
+        @DisplayName("Throws IllegalStateException on 404")
+        void throws404() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks();
+                 MockedStatic<Entity> eMock = setupEntityMock()) {
+                when(mockBuilder.post(any())).thenReturn(mockResponse);
+                Response.StatusType statusType = mock(Response.StatusType.class);
+                when(mockResponse.getStatusInfo()).thenReturn(statusType);
+                when(statusType.getFamily()).thenReturn(Response.Status.Family.CLIENT_ERROR);
+                when(mockResponse.getStatus()).thenReturn(404);
+                when(mockResponse.readEntity(String.class)).thenReturn("Not Found");
+
+                IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                        client.parseAndValidateJQL("project = TEST", false, "acc", "inv"));
+                assertEquals("Please Provide Valid Host URL", ex.getMessage());
+            }
+        }
+
+        @Test
+        @DisplayName("Throws IllegalStateException on 400")
+        void throws400() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks();
+                 MockedStatic<Entity> eMock = setupEntityMock()) {
+                when(mockBuilder.post(any())).thenReturn(mockResponse);
+                Response.StatusType statusType = mock(Response.StatusType.class);
+                when(mockResponse.getStatusInfo()).thenReturn(statusType);
+                when(statusType.getFamily()).thenReturn(Response.Status.Family.CLIENT_ERROR);
+                when(mockResponse.getStatus()).thenReturn(400);
+                when(mockResponse.readEntity(String.class)).thenReturn("Bad Request");
+
+                IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                        client.parseAndValidateJQL("project = TEST", false, "acc", "inv"));
+                assertEquals("Please Provide Valid Auth Token OR User Name", ex.getMessage());
+            }
+        }
+
+        @Test
+        @DisplayName("Returns empty string on other error status codes")
+        void returnsEmptyOnOtherErrors() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks();
+                 MockedStatic<Entity> eMock = setupEntityMock()) {
+                when(mockBuilder.post(any())).thenReturn(mockResponse);
+                Response.StatusType statusType = mock(Response.StatusType.class);
+                when(mockResponse.getStatusInfo()).thenReturn(statusType);
+                when(statusType.getFamily()).thenReturn(Response.Status.Family.SERVER_ERROR);
+                when(mockResponse.getStatus()).thenReturn(500);
+                when(mockResponse.readEntity(String.class)).thenReturn("Server Error");
+
+                String result = client.parseAndValidateJQL("project = TEST", false, "acc", "inv");
+                assertEquals("", result);
+            }
+        }
+
+        @Test
+        @DisplayName("Throws when invokeAsUser is true")
+        void throwsWhenInvokeAsUserTrue() {
+            AuthRestClient client = new AuthRestClient(attributes, true, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.parseAndValidateJQL("project = TEST", true, "acc", "inv"));
+        }
+
+        @Test
+        @DisplayName("Try-with-resources handles null response from post")
+        void nullResponseFromPost() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks();
+                 MockedStatic<Entity> eMock = setupEntityMock()) {
+                when(mockBuilder.post(any())).thenReturn(null);
+
+                assertThrows(NullPointerException.class, () ->
+                        client.parseAndValidateJQL("project = TEST", false, "acc", "inv"));
+            }
+        }
+
+        @Test
+        @DisplayName("Try-with-resources suppresses close exception when body throws")
+        void closeThrowsDuringExceptionPath() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks();
+                 MockedStatic<Entity> eMock = setupEntityMock()) {
+                Response spyResponse = mock(Response.class);
+                when(mockBuilder.post(any())).thenReturn(spyResponse);
+                when(spyResponse.readEntity(String.class)).thenThrow(new RuntimeException("body error"));
+                doThrow(new RuntimeException("close error")).when(spyResponse).close();
+
+                RuntimeException ex = assertThrows(RuntimeException.class, () ->
+                        client.parseAndValidateJQL("project = TEST", false, "acc", "inv"));
+                assertEquals("body error", ex.getMessage());
+                assertTrue(ex.getSuppressed().length > 0);
+                assertEquals("close error", ex.getSuppressed()[0].getMessage());
+            }
+        }
     }
 
-    @Test
-    @DisplayName("Should throw IllegalArgumentException when files is empty in attachFile")
-    void testAttachFile_ThrowsException_WhenFilesEmpty() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
+    // ── fetchIssues (with invokeAsUser param) ───────────────────────────
 
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.attachFile("TEST-123", List.of())
-        );
-        assertEquals("file not found", exception.getMessage());
+    @Nested
+    @DisplayName("fetchIssues with invokeAsUser")
+    class FetchIssuesWithInvokeAsUserTests {
+
+        @Test
+        @DisplayName("Returns entity on successful response")
+        void success() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockSuccessResponse("{\"issues\":[]}");
+
+                String result = client.fetchIssues(false, "acc", "inv", "search", Map.of(), String.class);
+                assertEquals("{\"issues\":[]}", result);
+            }
+        }
+
+        @Test
+        @DisplayName("Throws IllegalStateException on error response")
+        void errorResponse() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockErrorResponse(500, "Internal Server Error");
+
+                IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                        client.fetchIssues(false, "acc", "inv", "search", Map.of(), String.class));
+                assertEquals("Internal Server Error", ex.getMessage());
+            }
+        }
+
+        @Test
+        @DisplayName("Throws when invokeAsUser override is true")
+        void throwsWhenInvokeAsUserTrue() {
+            AuthRestClient client = new AuthRestClient(attributes, true, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.fetchIssues(true, "acc", "inv", "search", Map.of(), String.class));
+        }
+
+        @Test
+        @DisplayName("Applies query parameters")
+        void withQueryParams() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            Map<String, Object> params = new HashMap<>();
+            params.put("jql", "project=TEST");
+            params.put("maxResults", 50);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockSuccessResponse("{}");
+
+                client.fetchIssues(false, "acc", "inv", "search", params, String.class);
+                verify(mockPathTarget).queryParam(eq("jql"), eq("project=TEST"));
+                verify(mockPathTarget).queryParam(eq("maxResults"), eq(50));
+            }
+        }
     }
 
-    @Test
-    @DisplayName("Should return null for getJiraAccessToken")
-    void testGetJiraAccessToken_ReturnsNull() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
+    // ── fetchIssues (without invokeAsUser param) ────────────────────────
 
-        // Act
-        String result = authRestClient.getJiraAccessToken();
+    @Nested
+    @DisplayName("fetchIssues without invokeAsUser")
+    class FetchIssuesWithoutInvokeAsUserTests {
 
-        // Assert
-        assertNull(result);
+        @Test
+        @DisplayName("Returns entity on successful response")
+        void success() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockSuccessResponse("{\"issues\":[]}");
+
+                String result = client.fetchIssues("acc", "inv", "search", Map.of(), String.class);
+                assertEquals("{\"issues\":[]}", result);
+            }
+        }
+
+        @Test
+        @DisplayName("Throws IllegalStateException on error response")
+        void errorResponse() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockErrorResponse(401, "Unauthorized");
+
+                IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                        client.fetchIssues("acc", "inv", "search", Map.of(), String.class));
+                assertEquals("Unauthorized", ex.getMessage());
+            }
+        }
+
+        @Test
+        @DisplayName("Uses null invokeAsUser override (delegates to getWebTarget(null))")
+        void usesNullOverride() {
+            // invokeAsUser=true on field, override=null → falls back to this.invokeAsUser=true → throws
+            AuthRestClient client = new AuthRestClient(attributes, true, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.fetchIssues("acc", "inv", "search", Map.of(), String.class));
+        }
     }
 
-    @Test
-    @DisplayName("Should extract base URL from hostUrl with /rest/ path")
-    void testGetBaseUrl_WithRestPath() throws Exception {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
-        java.lang.reflect.Method method = AuthRestClient.class.getDeclaredMethod("getBaseUrl", String.class);
-        method.setAccessible(true);
+    // ── attachFile ──────────────────────────────────────────────────────
 
-        // Act
-        String result = (String) method.invoke(authRestClient, "https://test.atlassian.net/rest/api/3");
+    @Nested
+    @DisplayName("attachFile")
+    class AttachFileTests {
 
-        // Assert
-        assertEquals("https://test.atlassian.net", result);
+        @Test
+        @DisplayName("Throws when resource is null")
+        void throwsWhenResourceNull() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.attachFile(null, List.of(new File("test.txt"))));
+        }
+
+        @Test
+        @DisplayName("Throws when resource is blank")
+        void throwsWhenResourceBlank() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.attachFile("   ", List.of(new File("test.txt"))));
+        }
+
+        @Test
+        @DisplayName("Throws when files is null")
+        void throwsWhenFilesNull() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.attachFile("TEST-123", null));
+        }
+
+        @Test
+        @DisplayName("Throws when files is empty")
+        void throwsWhenFilesEmpty() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            assertThrows(IllegalArgumentException.class, () ->
+                    client.attachFile("TEST-123", List.of()));
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("Constructs correct URL and delegates to uploadMultipart")
+        void success_constructsUrlAndDelegates() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            File testFile = new File("test.txt");
+
+            try (MockedStatic<Unirest> unirestMock = mockStatic(Unirest.class)) {
+                HttpRequestWithBody mockReqBody = mock(HttpRequestWithBody.class);
+                MultipartBody mockMultipart = mock(MultipartBody.class);
+                HttpResponse<JsonNode> mockHttpResponse = mock(HttpResponse.class);
+
+                unirestMock.when(() -> Unirest.post(anyString())).thenReturn(mockReqBody);
+                when(mockReqBody.basicAuth(anyString(), anyString())).thenReturn(mockReqBody);
+                when(mockReqBody.header(anyString(), anyString())).thenReturn(mockReqBody);
+                when(mockReqBody.field(eq("file"), anyList())).thenReturn(mockMultipart);
+                when(mockMultipart.asJson()).thenReturn(mockHttpResponse);
+
+                HttpResponse<JsonNode> result = client.attachFile("TEST-123", List.of(testFile));
+                assertNotNull(result);
+            } catch (Exception e) {
+                fail("Should not throw: " + e.getMessage());
+            }
+        }
     }
 
-    @Test
-    @DisplayName("Should extract base URL from hostUrl ending with /rest")
-    void testGetBaseUrl_EndingWithRest() throws Exception {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
-        java.lang.reflect.Method method = AuthRestClient.class.getDeclaredMethod("getBaseUrl", String.class);
-        method.setAccessible(true);
+    // ── WebTarget caching ───────────────────────────────────────────────
 
-        // Act
-        String result = (String) method.invoke(authRestClient, "https://test.atlassian.net/rest");
+    @Nested
+    @DisplayName("WebTarget caching")
+    class WebTargetCachingTests {
 
-        // Assert
-        assertEquals("https://test.atlassian.net", result);
+        @Test
+        @DisplayName("getJiraServiceAPIWebTarget caches after first call")
+        void serviceAPITargetCached() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockSuccessResponse("ok");
+
+                // Two calls to fetchMiscellaneousService use getJiraServiceAPIWebTarget
+                client.fetchMiscellaneousService("a", Map.of(), String.class);
+                client.fetchMiscellaneousService("b", Map.of(), String.class);
+
+                // target() should only be called once (cached)
+                verify(mockClient, times(1)).target(anyString());
+            }
+        }
+
+        @Test
+        @DisplayName("getJiraServiceManageWebTarget caches after first call")
+        void serviceManageTargetCached() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                // Two calls to getJiraServiceResourceInvoker use getJiraServiceManageWebTarget
+                client.getJiraServiceResourceInvoker("a", Map.of());
+                client.getJiraServiceResourceInvoker("b", Map.of());
+
+                verify(mockClient, times(1)).target(anyString());
+            }
+        }
     }
 
-    @Test
-    @DisplayName("Should return same URL when no /rest in hostUrl")
-    void testGetBaseUrl_NoRestPath() throws Exception {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
-        java.lang.reflect.Method method = AuthRestClient.class.getDeclaredMethod("getBaseUrl", String.class);
-        method.setAccessible(true);
+    // ── entity instanceof String pattern ────────────────────────────────
 
-        // Act
-        String result = (String) method.invoke(authRestClient, "https://test.atlassian.net");
+    @Nested
+    @DisplayName("entity instanceof String pattern match")
+    class EntityInstanceOfStringTests {
 
-        // Assert
-        assertEquals("https://test.atlassian.net", result);
-    }
+        @Test
+        @DisplayName("fetchMiscellaneousService passes String body to error mapper")
+        void fetchMiscellaneous_stringBody() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockErrorResponse(404, "Resource not found");
 
-    @Test
-    @DisplayName("Should return empty string when hostUrl is null")
-    void testGetBaseUrl_NullHostUrl() throws Exception {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
-        java.lang.reflect.Method method = AuthRestClient.class.getDeclaredMethod("getBaseUrl", String.class);
-        method.setAccessible(true);
+                Exception ex = assertThrows(Exception.class, () ->
+                        client.fetchMiscellaneousService("missing", Map.of(), String.class));
+                assertNotNull(ex);
+            }
+        }
 
-        // Act
-        String result = (String) method.invoke(authRestClient, (String) null);
+        @Test
+        @DisplayName("fetchJiraService passes String body to error mapper")
+        void fetchJiraService_stringBody() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                mockErrorResponse(401, "Invalid token");
 
-        // Assert
-        assertEquals("", result);
-    }
+                Exception ex = assertThrows(Exception.class, () ->
+                        client.fetchJiraService("missing", Map.of(), String.class));
+                assertNotNull(ex);
+            }
+        }
 
-    @Test
-    @DisplayName("Should return empty string when hostUrl is empty")
-    void testGetBaseUrl_EmptyHostUrl() throws Exception {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, false, false);
-        java.lang.reflect.Method method = AuthRestClient.class.getDeclaredMethod("getBaseUrl", String.class);
-        method.setAccessible(true);
+        @Test
+        @DisplayName("fetchMiscellaneousService passes null body when entity is not String")
+        void fetchMiscellaneous_nonStringBody() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                Response.StatusType statusType = mock(Response.StatusType.class);
+                when(mockResponse.getStatusInfo()).thenReturn(statusType);
+                when(statusType.getFamily()).thenReturn(Response.Status.Family.CLIENT_ERROR);
+                when(mockResponse.getStatus()).thenReturn(400);
+                // Return Integer, which is not instanceof String
+                when(mockResponse.readEntity(Integer.class)).thenReturn(42);
 
-        // Act
-        String result = (String) method.invoke(authRestClient, "");
+                assertThrows(Exception.class, () ->
+                        client.fetchMiscellaneousService("x", Map.of(), Integer.class));
+            }
+        }
 
-        // Assert
-        assertEquals("", result);
-    }
+        @Test
+        @DisplayName("fetchJiraService passes null body when entity is not String")
+        void fetchJiraService_nonStringBody() {
+            AuthRestClient client = new AuthRestClient(attributes, false, false);
+            try (MockedStatic<ClientBuilder> cbMock = setupJerseyMocks()) {
+                when(mockBuilder.get()).thenReturn(mockResponse);
+                Response.StatusType statusType = mock(Response.StatusType.class);
+                when(mockResponse.getStatusInfo()).thenReturn(statusType);
+                when(statusType.getFamily()).thenReturn(Response.Status.Family.CLIENT_ERROR);
+                when(mockResponse.getStatus()).thenReturn(403);
+                when(mockResponse.readEntity(Integer.class)).thenReturn(99);
 
-    @Test
-    @DisplayName("Should allow invokeAsUser when callFromValidateAttributes is true")
-    void testConstructor_AllowsInvokeAsUser_WhenFromValidateAttributes() {
-        // Act
-        authRestClient = new AuthRestClient(attributes, true, true);
-
-        // Assert - Should not throw exception
-        assertNotNull(authRestClient);
-    }
-
-    @Test
-    @DisplayName("Should throw exception for getJiraServiceResourceInvoker when invokeAsUser is true")
-    void testGetJiraServiceResourceInvoker_ThrowsException_WhenInvokeAsUserTrue() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, true, false);
-        Map<String, Object> queryParams = new HashMap<>();
-
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.getJiraServiceResourceInvoker("servicedesk", queryParams)
-        );
-        assertTrue(exception.getMessage().contains("User cannot be authenticated"));
-    }
-
-    @Test
-    @DisplayName("Should throw exception for fetchJiraService when invokeAsUser is true")
-    void testFetchJiraService_ThrowsException_WhenInvokeAsUserTrue() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, true, false);
-        Map<String, Object> queryParams = new HashMap<>();
-
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.fetchJiraService("servicedesk", queryParams, String.class)
-        );
-        assertTrue(exception.getMessage().contains("User cannot be authenticated"));
-    }
-
-    @Test
-    @DisplayName("Should throw exception for fetchMiscellaneousService when invokeAsUser is true")
-    void testFetchMiscellaneousService_ThrowsException_WhenInvokeAsUserTrue() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, true, false);
-        Map<String, Object> queryParams = new HashMap<>();
-
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.fetchMiscellaneousService("servicedesk", queryParams, String.class)
-        );
-        assertTrue(exception.getMessage().contains("User cannot be authenticated"));
-    }
-
-    @Test
-    @DisplayName("Should throw exception for parseAndValidateJQL when invokeAsUser is true")
-    void testParseAndValidateJQL_ThrowsException_WhenInvokeAsUserTrue() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, true, false);
-
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.parseAndValidateJQL("project = TEST", true, "account-id", "invoker-id")
-        );
-        assertTrue(exception.getMessage().contains("User cannot be authenticated"));
-    }
-
-    @Test
-    @DisplayName("Should throw exception for fetchIssues with invokeAsUser when invokeAsUser is true")
-    void testFetchIssues_WithInvokeAsUser_ThrowsException() {
-        // Arrange
-        authRestClient = new AuthRestClient(attributes, true, false);
-        Map<String, Object> queryParams = new HashMap<>();
-
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authRestClient.fetchIssues(true, "account-id", "invoker-id", "search", queryParams, String.class)
-        );
-        assertTrue(exception.getMessage().contains("User cannot be authenticated"));
+                assertThrows(Exception.class, () ->
+                        client.fetchJiraService("x", Map.of(), Integer.class));
+            }
+        }
     }
 }

@@ -13,105 +13,40 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
 
-import app.krista.extension.authorization.MustAuthenticateException;
-import app.krista.extension.authorization.MustAuthorizeException;
-import app.krista.extension.authorization.RequestAuthenticator;
-import app.krista.extension.request.ProtoRequest;
-import app.krista.extension.request.ProtoResponse;
-import app.krista.extension.request.protos.http.HttpRequest;
 import app.krista.ksdk.context.AuthorizationContext;
-import app.krista.model.field.NamedField;
+import app.krista.sdk.atlassian.authn.AbstractAtlassianRequestAuthenticator;
 import org.jvnet.hk2.annotations.Service;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import javax.inject.Inject;
-import javax.ws.rs.core.MultivaluedMap;
-import java.io.IOException;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
+/**
+ * Request authenticator for the JSM extension. The OAuth callback plumbing
+ * (state extraction, must-authorize redirect with audience/consent suffix)
+ * lives in the shared {@link AbstractAtlassianRequestAuthenticator}.
+ *
+ * <p>Uses the SDK's {@code buildSecuredAuthorizationUrl()} so that user-level
+ * authentication redirects produce properly secured OAuth state (CSRF nonce,
+ * invokerId and forwardPath for managed mode) — identical to the auth-tab flow.</p>
+ */
 @Service
-public final class JiraRequestAuthenticator implements RequestAuthenticator {
-    private static final String STATE = "state";
+public final class JiraRequestAuthenticator extends AbstractAtlassianRequestAuthenticator {
+
     private final JiraService jiraService;
-    private final AuthorizationContext authorizationContext;
-    private static final Logger LOGGER = LoggerFactory.getLogger(JiraRequestAuthenticator.class);
 
     @Inject
     public JiraRequestAuthenticator(JiraService jiraService,
                                     AuthorizationContext authorizationContext) {
+        super(authorizationContext);
         this.jiraService = jiraService;
-        this.authorizationContext = authorizationContext;
     }
 
     @Override
-    public String getScheme() {
-        return null;
-    }
-
-    @Override
-    public Set<String> getSupportedProtocols() {
-        return Collections.emptySet();
-    }
-
-    @Override
-    public String getAuthenticatedAccountId(ProtoRequest protoRequest) {
-        try {
-            HttpRequest httpRequest = (HttpRequest) protoRequest;
-            if (httpRequest.getUri().getPath().equals("/callback")) {
-                httpRequest.bufferBody();
-                MultivaluedMap<String, String> queryParameters = httpRequest.getQueryParameters();
-                if (queryParameters == null || queryParameters.get(STATE) == null || queryParameters.get(STATE).get(0) == null) {
-                    return null;
-                }
-                return String.valueOf(queryParameters.get(STATE).get(0));
-            } else {
-                return null;
-            }
-        } catch (RuntimeException | IOException cause) {
-            System.err.println("### IGNORING and returning null for getAuthenticatedAccountId :" + cause.getMessage());
-            LOGGER.debug(cause.getMessage());
-            return null;
-        }
-    }
-
-    @Override
-    public boolean setServiceAuthorization(String s) {
-        return false;
-    }
-
-    @Override
-    public Map<String, NamedField> getAttributeFields() {
-        return Map.of();
-    }
-
-    @Override
-    public ProtoResponse getMustAuthenticateResponse(MustAuthenticateException cause, ProtoRequest protoRequest) {
-        return null;
-    }
-
-    @Override
-    public AuthorizationResponse getMustAuthenticateResponse(MustAuthenticateException cause) {
-        return null;
-    }
-
-    @Override
-    public ProtoResponse getMustAuthorizeResponse(MustAuthorizeException cause, ProtoRequest protoRequest) {
-        return null;
-    }
-
-    @Override
-    public AuthorizationResponse getMustAuthorizeResponse(MustAuthorizeException cause) {
-        String accountId = authorizationContext.getAuthorizedAccount().getAccountId();
-        String location = jiraService.getOauthService().getAuthorizationUrl(accountId) + "&audience=api.atlassian.com&prompt=consent";
-        return new AuthorizationResponse(location, List.of());
+    protected String buildAuthorizationUrl(String accountId) {
+        return jiraService.buildSecuredAuthorizationUrl(accountId);
     }
 }

@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.catalog;
@@ -24,24 +24,27 @@ import app.krista.extension.impl.anno.Attribute;
 import app.krista.extension.impl.anno.CatalogRequest;
 import app.krista.extension.impl.anno.Domain;
 import app.krista.extension.impl.anno.Field;
+import app.krista.extensions.devsecops.development.jira.api.JsmAuditService;
 import app.krista.extensions.devsecops.development.jira.catalog.entities.Issue;
 import app.krista.extensions.devsecops.development.jira.catalog.entities.TicketPriority;
 import app.krista.extensions.devsecops.development.jira.catalog.errorhandlers.ErrorHandlingStateManager;
 import app.krista.extensions.devsecops.development.jira.catalog.errorhandlers.ExtensionResponseGenerator;
-import app.krista.extensions.devsecops.development.jira.catalog.extresp.ExtensionResponseFactory;
+import app.krista.sdk.atlassian.extresp.ExtensionResponseFactory;
 import app.krista.extensions.devsecops.development.jira.catalog.extresp.JiraResources;
-import app.krista.extensions.devsecops.development.jira.catalog.extresp.RemediationActionFactory;
+import app.krista.sdk.atlassian.extresp.RemediationActionFactory;
 import app.krista.extensions.devsecops.development.jira.catalog.validators.ValidationOrchestrator;
 import app.krista.extensions.devsecops.development.jira.catalog.validators.Validator;
 import app.krista.extensions.devsecops.development.jira.impl.IssueDao;
-import app.krista.extensions.devsecops.development.jira.impl.JQLBuilder;
+import app.krista.sdk.atlassian.jql.JQLBuilder;
 import app.krista.extensions.devsecops.development.jira.impl.ProjectDao;
 import app.krista.extensions.devsecops.development.jira.impl.WebhookDao;
 import app.krista.extensions.devsecops.development.jira.util.FieldValidator;
 import app.krista.extensions.devsecops.development.jira.util.JiraConstants;
+import app.krista.extensions.devsecops.development.jira.util.TelemetryConstants;
 import app.krista.extensions.util.EventHandler;
 import app.krista.ksdk.context.AuthorizationContext;
 import app.krista.ksdk.context.RequestContext;
+import app.krista.ksdk.telemetry.TelemetryMetrics;
 import app.krista.model.base.FreeForm;
 import com.kristasoft.common.holders.ThreadLocalProxy;
 import org.json.JSONArray;
@@ -73,12 +76,14 @@ public final class RitualsArea {
     ExecutorService executorService = Executors.newSingleThreadExecutor();
     private static final Logger LOGGER = LoggerFactory.getLogger(RitualsArea.class);
     private final ProjectDao projectDao;
+    private final TelemetryMetrics telemetryMetrics;
+    private final JsmAuditService jsmAuditService;
 
     @Inject
     public RitualsArea(IssueDao issueDao, RequestContext requestContext, AuthorizationContext authorizationContext,
                        EventHandler eventHandler, ValidationOrchestrator validationOrchestrator,
                        ErrorHandlingStateManager internalStateManager, ExtensionResponseGenerator responseGenerator,
-                       ProjectDao projectDao) {
+                       ProjectDao projectDao, TelemetryMetrics telemetryMetrics, JsmAuditService jsmAuditService) {
         this.issueDao = issueDao;
         this.requestContext = requestContext;
         this.authorizationContext = authorizationContext;
@@ -87,6 +92,8 @@ public final class RitualsArea {
         this.internalStateManager = internalStateManager;
         this.responseGenerator = responseGenerator;
         this.projectDao = projectDao;
+        this.telemetryMetrics = telemetryMetrics;
+        this.jsmAuditService = jsmAuditService;
     }
 
     @CatalogRequest(id = "localDomainRequest_30916ab2-7bbf-4c1d-902f-ce12adeb2d09", name = "Update status of multiple issues", description = "Update status of issues", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM)
@@ -94,27 +101,48 @@ public final class RitualsArea {
     public ExtensionResponse updateStatusOfMultipleIssues(
             @Field(name = "Status Name", type = "Text") String statusName,
             @Field.Desc(name = "Issue Key", type = "[ Text ]") List<String> issueKey) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Update Status of Multiple Issues");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_MULTIPLE_ISSUES_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<Issue> updatedIssue = new ArrayList<>();
             issueKey.forEach(key -> {
                 issueDao.updateStatus(key, statusName);
                 updatedIssue.add(issueDao.getIssueFinal(key));
             });
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_MULTIPLE_ISSUES_REQUEST_SUCCESS, 1);
             return ExtensionResponseFactory.create(Map.of("Updated issues", updatedIssue));
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Update Status of Multiple Issues", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_MULTIPLE_ISSUES_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Update Status of Multiple Issues", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_MULTIPLE_ISSUES_REQUEST_FAILURE, 1);
             throw cause;
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Update Status of Multiple Issues", cause);
             LOGGER.error("Error occurred while updating multiple issues :{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_MULTIPLE_ISSUES_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while updating multiple issues",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Update Status of Multiple Issues");
+            }
         }
     }
 
-    @CatalogRequest(id = "localDomainRequest_f39c66d5-0862-4b3f-a6bb-badadf5ce7d0", name = "Add a comment", description = "Add comment to issue", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_f39c66d5-0862-4b3f-a6bb-badadf5ce7d0", name = "Add a comment", description = "Add comment to issue", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM, tool = true)
     @Field(name = "Is successful", type = "Switch", required = false)
     public ExtensionResponse addAComment(
             @Field(name = "Comment", type = "Paragraph", required = true, attributes = {}, options = {}) String comment,
@@ -122,12 +150,20 @@ public final class RitualsArea {
             @Field.PickOne(name = "Comment Visibility", values = {"Public",
                     "Internal"}, required = false, attributes = {
                     @Attribute(name = "visualWidth", value = "S")}, options = {}) String commentVisibility) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Add a Comment");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_COMMENT_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.TICKET_ID, issueKey));
             if (validationResults.isEmpty()) {
                 try {
                     issueDao.addComment(issueKey, comment, commentVisibility);
+                    telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_COMMENT_REQUEST_SUCCESS, 1);
                     return ExtensionResponseFactory.create(Map.of("Is successful", true));
                 } catch (MustAuthorizeException cause) {
                     throw new MustAuthorizeException("Please authenticate yourself." + cause.getMessage());
@@ -139,6 +175,7 @@ public final class RitualsArea {
             String stateId = UUID.randomUUID().toString();
             internalStateManager.put(stateId,
                     JiraConstants.GSON_BUILDER.toJson(Map.of(JiraConstants.VALIDATION_RESULT, validationResults)));
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_COMMENT_REQUEST_SUCCESS, 1);
             return responseGenerator.generateConfirmationResponse(
                     ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                     "confirmReenterForAddAComment", Map.of(JiraConstants.STATE_ID, stateId,
@@ -146,55 +183,98 @@ public final class RitualsArea {
                             JiraConstants.COMMENT, comment,
                             COMMENT_VISIBILITY, commentVisibility));
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Add a Comment", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_COMMENT_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Add a Comment", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_COMMENT_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Add a Comment", cause);
             LOGGER.error("Error occurred while adding comment in issue ;{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_COMMENT_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while adding comment in issue",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Add a Comment");
+            }
         }
     }
 
-    @CatalogRequest(id = "localDomainRequest_21823408-60d2-4cec-b39a-b98f806c0638", name = "Get user issues", description = "Get issues by user account id", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_21823408-60d2-4cec-b39a-b98f806c0638", name = "Get user issues", description = "Get issues by user account id", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM, tool = true)
     @Field.Desc(name = "User Issues", type = "[ Entity(Issue) ]")
     public ExtensionResponse getUserIssues(
             @Field(name = "User Account Id", type = "Text") String userAccountId) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Get User Issues");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUES_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.USER_ID, userAccountId));
-            if (validationResults.isEmpty())
+            if (validationResults.isEmpty()) {
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUES_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of(
                         "User Issues", issueDao.searchByJQL(
                                 " assignee in (" + userAccountId + ") order by priority DESC, duedate DESC", 30, 1)));
+            }
             String stateId = UUID.randomUUID().toString();
             internalStateManager.put(stateId,
                     JiraConstants.GSON_BUILDER.toJson(Map.of(JiraConstants.VALIDATION_RESULT, validationResults)));
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUES_REQUEST_SUCCESS, 1);
             return responseGenerator.generateConfirmationResponse(
                     ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                     "confirmReenterForGetUserIssues", Map.of(JiraConstants.STATE_ID, stateId,
                             JiraResources.ACCOUNT_ID, userAccountId));
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Get User Issues", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUES_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get User Issues", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUES_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get User Issues", cause);
             LOGGER.error("Error occurred while get issues by user account Id :{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUES_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while get issues by user account Id",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Get User Issues");
+            }
         }
     }
 
-    @CatalogRequest(id = "localDomainRequest_054845ea-7fc1-4ad6-b1f3-5eb96a784daa", name = "Update status of issue", description = "Update status of issue", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_054845ea-7fc1-4ad6-b1f3-5eb96a784daa", name = "Update status of issue", description = "Update status of issue", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM, tool = true)
     @Field.Desc(name = "Updated Issue", type = "Entity(Issue)")
     public ExtensionResponse updateStatusOfIssue(
             @Field(name = "Issue Key", type = "Text") String issueKey,
             @Field(name = "Status Name", type = "Text") String statusName) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Update Status of Issue");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_ISSUE_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.TICKET_ID, issueKey));
             if (validationResults.isEmpty())
@@ -203,74 +283,114 @@ public final class RitualsArea {
                                 Validator.ValidationResource.STATUS_NAME, statusName));
             if (validationResults.isEmpty()) {
                 issueDao.updateStatus(issueKey, statusName);
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_ISSUE_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of(
                         "Updated Issue", issueDao.getIssueFinal(issueKey)));
             }
             String stateId = UUID.randomUUID().toString();
             internalStateManager.put(stateId,
                     JiraConstants.GSON_BUILDER.toJson(Map.of(JiraConstants.VALIDATION_RESULT, validationResults)));
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_ISSUE_REQUEST_SUCCESS, 1);
             return responseGenerator.generateConfirmationResponse(
                     ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                     "confirmReenterForUpdateStatusOfIssue", Map.of(JiraConstants.STATE_ID, stateId,
                             JiraResources.TICKET_ID, issueKey,
                             JiraResources.STATUS_NAME, statusName));
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Update Status of Issue", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_ISSUE_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Update Status of Issue", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_ISSUE_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Update Status of Issue", cause);
             LOGGER.error("Error occurred while updating status of issue :{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_STATUS_OF_ISSUE_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while updating status of issue",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Update Status of Issue");
+            }
         }
     }
 
-    @CatalogRequest(id = "localDomainRequest_33949891-0ba1-43dd-8d2f-170596a74a00", name = "Assign a task to user", description = "Assign a task to user", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_33949891-0ba1-43dd-8d2f-170596a74a00", name = "Assign a task to user", description = "Assign a task to user", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM, tool = true)
     @Field.Desc(name = "Updated issue details", type = "Entity(Issue)")
     public ExtensionResponse assignATaskToUser(
             @Field(name = "To assign user account id", type = "Text") String toAssignUserAccountId,
             @Field(name = "Issue key", type = "Text") String issueKey) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Assign a Task to User");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_TASK_TO_USER_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.TICKET_ID, issueKey,
                             Validator.ValidationResource.USER_ID, toAssignUserAccountId));
             if (validationResults.isEmpty()) {
                 issueDao.assignTask(issueKey, toAssignUserAccountId);
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_TASK_TO_USER_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of(
                         "Updated issue details", issueDao.getIssueFinal(issueKey)));
             }
             String stateId = UUID.randomUUID().toString();
             internalStateManager.put(stateId,
                     JiraConstants.GSON_BUILDER.toJson(Map.of(JiraConstants.VALIDATION_RESULT, validationResults)));
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_TASK_TO_USER_REQUEST_SUCCESS, 1);
             return responseGenerator.generateConfirmationResponse(
                     ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                     "confirmReenterAssignATaskToUser", Map.of(
                             JiraConstants.STATE_ID, stateId,
                             JiraResources.TICKET_ID, issueKey, JiraResources.ACCOUNT_ID, toAssignUserAccountId));
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Assign a Task to User", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_TASK_TO_USER_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Assign a Task to User", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_TASK_TO_USER_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Assign a Task to User", cause);
             LOGGER.error("Error occurred while assigning task to user :{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_TASK_TO_USER_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while assigning task to user",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Assign a Task to User");
+            }
         }
     }
 
-    @CatalogRequest(id = "localDomainRequest_ac7c50a8-f72f-4b71-870b-d3db381a7b05", name = "Fetch by JQL query", description = "Fetch list of issues by JQL query", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_ac7c50a8-f72f-4b71-870b-d3db381a7b05", name = "Fetch by JQL query", description = "Fetch list of issues by JQL query", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM, tool = true)
     @Field.Desc(name = "Task ID", type = "Text", required = false)
     public ExtensionResponse fetchByJQLQuery(@Field(name = "JQL Query", type = "Paragraph") String jQLQuery) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Fetch by JQL Query");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.FETCH_BY_JQL_QUERY_REQUEST_COUNT, 1);
             boolean invokeAsUser = requestContext.invokeAsUser();
             if (invokeAsUser) {
                 issueDao.validateCredentials();
             }
-            String invokerId = requestContext.getInvokerId();
             String accountID = authorizationContext.getAuthorizedAccount().getAccountId();
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.JQL_QUERY, jQLQuery));
@@ -296,6 +416,7 @@ public final class RitualsArea {
 
                     eventHandler.handleEvent(taskId, freeForm);
                 });
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.FETCH_BY_JQL_QUERY_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of(
                         "Task ID", taskId));
             } else {
@@ -303,23 +424,37 @@ public final class RitualsArea {
                 internalStateManager.put(stateId,
                         JiraConstants.GSON_BUILDER.toJson(Map.of(JiraConstants.VALIDATION_RESULT, validationResults,
                                 "Task ID", taskId, "AccountID", accountID)));
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.FETCH_BY_JQL_QUERY_REQUEST_SUCCESS, 1);
                 return responseGenerator.generateConfirmationResponse(
                         ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                         "confirmReenterJQLQuery", Map.of(
                                 JiraConstants.STATE_ID, stateId, JQL_QUERY, jQLQuery));
             }
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Fetch by JQL Query", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.FETCH_BY_JQL_QUERY_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Fetch by JQL Query", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.FETCH_BY_JQL_QUERY_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Fetch by JQL Query", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.FETCH_BY_JQL_QUERY_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause.getMessage(),
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR,
                     List.of(RemediationActionFactory.createInformActionALLParticipants(cause.getMessage(), List.of())),
                     null, Map.of());
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Fetch by JQL Query");
+            }
         }
     }
 
@@ -329,65 +464,110 @@ public final class RitualsArea {
             @Field(name = "eventName", type = "Text") String eventName,
             @Field(name = "eventData", type = "FreeForm") FreeForm eventData,
             @Field(name = "Task ID", type = "Text", required = true, attributes = {}, options = {}) String taskID) {
-        LOGGER.info(" Started getResultsForFetchIssuesByJQLQuery taskID : {} & eventName : {}", taskID, eventName);
-        if (eventName.equals(taskID)) {
-            if (Boolean.TRUE.equals(eventData.get(IS_ERROR))) {
-                LOGGER.error("Invalid JQL query :{}", eventData.get(ERROR_MESSAGE));
-                return ExtensionResponseFactory.create(eventData.get(ERROR_MESSAGE).toString(),
-                        ExtensionResponse.Error.ExceptionType.INPUT_ERROR,
-                        List.of(RemediationActionFactory
-                                .createInformActionALLParticipants(eventData.get(ERROR_MESSAGE).toString(), List.of())),
-                        null, Map.of());
-            } else {
-                try {
-                    List<Issue> issueList = (List<Issue>) eventData.get("Data");
-                    LOGGER.info(" issueList size : {}", issueList.size());
-                    if (issueList.isEmpty()) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Get Results for Fetch Issues by JQL Query");
+        boolean auditRecorded = false;
+        try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_RESULTS_FOR_FETCH_ISSUES_BY_JQL_QUERY_REQUEST_COUNT, 1);
+            LOGGER.info(" Started getResultsForFetchIssuesByJQLQuery taskID : {} & eventName : {}", taskID, eventName);
+            if (eventName.equals(taskID)) {
+                if (Boolean.TRUE.equals(eventData.get(IS_ERROR))) {
+                    LOGGER.error("Invalid JQL query :{}", eventData.get(ERROR_MESSAGE));
+                    telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_RESULTS_FOR_FETCH_ISSUES_BY_JQL_QUERY_REQUEST_FAILURE, 1);
+                    return ExtensionResponseFactory.create(eventData.get(ERROR_MESSAGE).toString(),
+                            ExtensionResponse.Error.ExceptionType.INPUT_ERROR,
+                            List.of(RemediationActionFactory
+                                    .createInformActionALLParticipants(eventData.get(ERROR_MESSAGE).toString(), List.of())),
+                            null, Map.of());
+                } else {
+                    try {
+                        List<Issue> issueList = (List<Issue>) eventData.get("Data");
+                        LOGGER.info(" issueList size : {}", issueList.size());
+                        if (issueList.isEmpty()) {
+                            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_RESULTS_FOR_FETCH_ISSUES_BY_JQL_QUERY_REQUEST_SUCCESS, 1);
+                            return ExtensionResponseFactory.create(Map.of(
+                                    LIST_OF_ISSUES, Collections.emptyList()));
+                        }
+                        telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_RESULTS_FOR_FETCH_ISSUES_BY_JQL_QUERY_REQUEST_SUCCESS, 1);
+                        return ExtensionResponseFactory.create(Map.of(LIST_OF_ISSUES, issueList));
+                    } catch (MustAuthorizeException cause) {
+                        LOGGER.error(cause.getMessage(), cause);
+                        throw cause;
+                    } catch (ClassCastException cause) {
+                        LOGGER.debug("Unable to cast eventData to List<Issue> : {}", cause.getMessage(), cause);
+                        telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_RESULTS_FOR_FETCH_ISSUES_BY_JQL_QUERY_REQUEST_SUCCESS, 1);
                         return ExtensionResponseFactory.create(Map.of(
                                 LIST_OF_ISSUES, Collections.emptyList()));
                     }
-                    return ExtensionResponseFactory.create(Map.of(LIST_OF_ISSUES, issueList));
-                } catch (MustAuthorizeException cause) {
-                    LOGGER.error(cause.getMessage(), cause);
-                    throw cause;
-                } catch (ClassCastException cause) {
-                    LOGGER.debug("Unable to cast eventData to List<Issue> : {}", cause.getMessage(), cause);
-                    return ExtensionResponseFactory.create(Map.of(
-                            LIST_OF_ISSUES, Collections.emptyList()));
                 }
             }
+            throw new IllegalStateException("Invalid task ID");
+        } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Get Results for Fetch Issues by JQL Query", cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_RESULTS_FOR_FETCH_ISSUES_BY_JQL_QUERY_REQUEST_FAILURE, 1);
+            throw cause;
+        } catch (IllegalStateException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get Results for Fetch Issues by JQL Query", cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_RESULTS_FOR_FETCH_ISSUES_BY_JQL_QUERY_REQUEST_FAILURE, 1);
+            throw cause;
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Get Results for Fetch Issues by JQL Query");
+            }
         }
-        throw new IllegalStateException("Invalid task ID");
     }
 
     @CatalogRequest(id = "localDomainRequest_9f1e46ff-b952-454e-b19f-ea6c79c3c2e0", name = "Get my issues by given statuses", description = "Get issue list for the current user", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM)
     @Field.Desc(name = "Issues", type = "[ Entity(Issue) ]")
     public ExtensionResponse getMyIssuesByGivenStatuses(
             @Field.Desc(name = "Status Names", type = "[ Text ]") List<String> statusNames) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Get My Issues by Given Statuses");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_MY_ISSUES_BY_GIVEN_STATUSES_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             String statusCommaSeparated = statusNames.stream()
                     .map(status -> "'" + status + "'")
                     .collect(Collectors.joining(","));
             List<Issue> issues = issueDao.searchByJQL("status in (" + statusCommaSeparated
                     + ") AND assignee in (currentUser()) ORDER BY priority DESC, updated DESC", 30, 1);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_MY_ISSUES_BY_GIVEN_STATUSES_REQUEST_SUCCESS, 1);
             return ExtensionResponseFactory.create(Map.of("Issues", issues));
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Get My Issues by Given Statuses", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_MY_ISSUES_BY_GIVEN_STATUSES_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get My Issues by Given Statuses", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_MY_ISSUES_BY_GIVEN_STATUSES_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get My Issues by Given Statuses", cause);
             LOGGER.error("Invalid query provided, Please check :{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_MY_ISSUES_BY_GIVEN_STATUSES_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create("Invalid query provided, Please check.",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR,
                     List.of(RemediationActionFactory
                             .createInformActionALLParticipants("Invalid query provided, Please check.", List.of())),
                     null, null);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Get My Issues by Given Statuses");
+            }
         }
     }
 
-    @CatalogRequest(id = "localDomainRequest_554940f4-188c-47eb-b0b6-768fc99b1399", name = "Get issues", description = "Get issues by given filters", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_554940f4-188c-47eb-b0b6-768fc99b1399", name = "Get issues", description = "Get issues by given filters", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM, tool = true)
     @Field.Desc(name = "List of Filtered Issues", type = "[ Entity(Issue) ]")
     public ExtensionResponse getIssues(
             @Field(name = "Summary", type = "Text", required = false) String summary,
@@ -398,7 +578,14 @@ public final class RitualsArea {
             @Field(name = "Project Key", type = "Text", required = false) String projectKey,
             @Field(name = "Page Size", type = "Number", required = false) Double pageSize,
             @Field(name = "Page Number", type = "Number", required = false) Double pageNumber) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Get Issues");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUES_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = new ArrayList<>();
             if (projectKey != null && !projectKey.isBlank()) {
                 validationResults.addAll(validationOrchestrator.validate(
@@ -423,6 +610,7 @@ public final class RitualsArea {
                 List<Issue> issues = issueDao.searchByJQL(jql,
                         (pageSize != null && pageSize > 0) ? pageSize.longValue() : 20,
                         (pageNumber != null && pageNumber > 0) ? pageNumber.longValue() : 1);
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUES_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of("List of Filtered Issues", issues));
             } else {
                 String stateId = UUID.randomUUID().toString();
@@ -435,48 +623,83 @@ public final class RitualsArea {
                 filedMap.put("Page Size", pageSize);
                 filedMap.put("Page Number", pageNumber);
                 internalStateManager.put(stateId, GSON_BUILDER.toJson(filedMap));
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUES_REQUEST_SUCCESS, 1);
                 return responseGenerator.generateConfirmationResponse(
                         ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                         "confirmReenterGetIssues",
                         Map.of(JiraConstants.STATE_ID, stateId, JiraResources.PROJECT_KEY, projectKey));
             }
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Get Issues", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUES_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get Issues", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUES_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get Issues", cause);
             LOGGER.error("Error occurred while getting issues by using filters :{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUES_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause,
                     "Error occurred while getting issues by using filters " + cause.getMessage(),
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Get Issues");
+            }
         }
 
     }
 
-    @CatalogRequest(id = "localDomainRequest_f3f1f7b6-9131-462d-bd1c-b80979b905cc", name = "Get user issue by issue type", description = "Get issue list by issue type and user account id", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_f3f1f7b6-9131-462d-bd1c-b80979b905cc", name = "Get user issue by issue type", description = "Get issue list by issue type and user account id", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM, tool = true)
     @Field.Desc(name = "Issues", type = "[ Entity(Issue) ]")
     public ExtensionResponse getUserIssueByIssueType(
             @Field(name = "User account Id", type = "Text") String userAccountId,
             @Field(name = "Issue Type", type = "Text") String issueType) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Get User Issue by Issue Type");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUE_BY_ISSUE_TYPE_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<Issue> issues = issueDao.searchByJQL("issuetype = \"" + issueType + "\"  AND assignee in ("
                     + userAccountId + ") order by priority DESC, duedate DESC", 30, 1);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUE_BY_ISSUE_TYPE_REQUEST_SUCCESS, 1);
             return ExtensionResponseFactory.create(Map.of("Issues", issues));
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Get User Issue by Issue Type", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUE_BY_ISSUE_TYPE_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get User Issue by Issue Type", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUE_BY_ISSUE_TYPE_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get User Issue by Issue Type", cause);
             LOGGER.error("Invalid query provided, Please check :{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_USER_ISSUE_BY_ISSUE_TYPE_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create("Invalid query provided, Please check.",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR,
                     List.of(RemediationActionFactory
                             .createInformActionALLParticipants("Invalid query provided, Please check.", List.of())),
                     null, null);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Get User Issue by Issue Type");
+            }
         }
     }
 
@@ -487,10 +710,36 @@ public final class RitualsArea {
             @Field.Text(name = "Issue Key", required = true, attributes = {
                     @Attribute(name = "visualWidth", value = "S")}, options = {}) String issueKey,
             @Field.Desc(name = "Request Participants", type = "[ Text ]", required = true) List<String> requestParticipants) {
-        LOGGER.info("Add Request Participants Initialised : Issue Key : {}\nRequest Participants : {}", issueKey,
-                requestParticipants);
-        issueDao.addRequestParticipants(issueKey, requestParticipants);
-        return ExtensionResponseFactory.create(Map.of("Request Participants Successfully", true));
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Add Request Participants to Issue");
+        boolean auditRecorded = false;
+        try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_REQUEST_PARTICIPANTS_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
+            LOGGER.info("Add Request Participants Initialised : Issue Key : {}\nRequest Participants : {}", issueKey, requestParticipants);
+            issueDao.addRequestParticipants(issueKey, requestParticipants);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_REQUEST_PARTICIPANTS_REQUEST_SUCCESS, 1);
+            return ExtensionResponseFactory.create(Map.of("Request Participants Successfully", true));
+        } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Add Request Participants to Issue", cause);
+            LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_REQUEST_PARTICIPANTS_REQUEST_FAILURE, 1);
+            throw cause;
+        } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Add Request Participants to Issue", cause);
+            LOGGER.error("Error occurred while adding request participants: {}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_REQUEST_PARTICIPANTS_REQUEST_FAILURE, 1);
+            return ExtensionResponseFactory.create(cause, "Error occurred while adding request participants",
+                    ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Add Request Participants to Issue");
+            }
+        }
     }
 
     @CatalogRequest(id = "localDomainRequest_2087c0b0-dff9-4001-bbd8-cf9933aa06d5", name = "Update an issue", description = "Update an issue with given details", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM)
@@ -506,7 +755,14 @@ public final class RitualsArea {
             @Field.Desc(name = "Labels", type = "[ Text ]", required = false) List<String> labels,
             @Field.Desc(name = "Components", type = "[ Text ]", required = false) List<String> components,
             @Field(name = "Custom Fields", type = "FreeForm") FreeForm customFields) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Update an Issue");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_AN_ISSUE_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.TICKET_ID, issueKey));
             if (validationResults.isEmpty()) {
@@ -524,6 +780,7 @@ public final class RitualsArea {
                     addWorklog(issueKey, new Date().getTime(), workLog);
                 }
                 Issue updatedIssue = issueDao.getIssueFinal(issueKey);
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_AN_ISSUE_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of("Updated Issue", updatedIssue));
             } else {
                 String stateId = UUID.randomUUID().toString();
@@ -539,41 +796,64 @@ public final class RitualsArea {
                 filedMap.put("Components", components);
                 filedMap.put("Custom Fields", customFields);
                 internalStateManager.put(stateId, JiraConstants.GSON_BUILDER.toJson(filedMap));
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_AN_ISSUE_REQUEST_SUCCESS, 1);
                 return responseGenerator.generateConfirmationResponse(
                         ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                         "confirmReenterForUpdateAnIssue", Map.of(JiraConstants.STATE_ID, stateId,
                                 JiraResources.TICKET_ID, issueKey));
             }
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Update an Issue", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_AN_ISSUE_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Update an Issue", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_AN_ISSUE_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Update an Issue", cause);
             LOGGER.error("Error occurred while updating issue :{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_AN_ISSUE_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while updating issue",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Update an Issue");
+            }
         }
     }
 
-    @CatalogRequest(id = "localDomainRequest_3712bbb2-daaa-42d9-9a36-fe0e55738236", name = "Update priority of issue", description = "Update priority of the issue", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_3712bbb2-daaa-42d9-9a36-fe0e55738236", name = "Update priority of issue", description = "Update priority of the issue", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM, tool = true)
     @Field.Desc(name = "Updated Issue", type = "Entity(Issue)")
     public ExtensionResponse updatePriorityOfIssue(
             @Field(name = "Issue Key", type = "Text") String issueKey,
             @Field(name = "Priority Name", type = "Text") String priorityName) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Update Priority of Issue");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_ISSUE_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.TICKET_ID, issueKey));
             if (validationResults.isEmpty()) {
                 TicketPriority priority = new TicketPriority();
                 priority.name = priorityName;
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_ISSUE_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of(
                         "Updated Issue", issueDao.updatePriority(priority, issueKey)));
             } else {
                 String stateId = UUID.randomUUID().toString();
                 internalStateManager.put(stateId, GSON_BUILDER
                         .toJson(Map.of(VALIDATION_RESULT, validationResults, "Priority Name", priorityName)));
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_ISSUE_REQUEST_SUCCESS, 1);
                 return responseGenerator.generateConfirmationResponse(
                         ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                         "confirmReenterUpdatePriorityOfIssue", Map.of(
@@ -582,15 +862,28 @@ public final class RitualsArea {
             }
 
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Update Priority of Issue", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_ISSUE_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Update Priority of Issue", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_ISSUE_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Update Priority of Issue", cause);
             LOGGER.error("Error occurred while updating priority of issue :{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_ISSUE_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while updating priority of issue",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Update Priority of Issue");
+            }
         }
     }
 
@@ -599,22 +892,43 @@ public final class RitualsArea {
     public ExtensionResponse updateThePriorityOfMultipleIssues(
             @Field.Desc(name = "Issue Keys", type = "[ Text ]") List<String> issueKeys,
             @Field(name = "New Priority", type = "Text") String newPriority) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Update the Priority of Multiple Issues");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_MULTIPLE_ISSUES_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<Issue> updatedIssue = new ArrayList<>();
             issueKeys.forEach(key -> {
                 issueDao.updatePriority(new TicketPriority(newPriority), key);
                 updatedIssue.add(issueDao.getIssueFinal(key));
             });
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_MULTIPLE_ISSUES_REQUEST_SUCCESS, 1);
             return ExtensionResponseFactory.create(Map.of(LIST_OF_ISSUES, updatedIssue));
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Update the Priority of Multiple Issues", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_MULTIPLE_ISSUES_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Update the Priority of Multiple Issues", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_MULTIPLE_ISSUES_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Update the Priority of Multiple Issues", cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.UPDATE_PRIORITY_OF_MULTIPLE_ISSUES_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while updating priority of multiple issue",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Update the Priority of Multiple Issues");
+            }
         }
 
     }
@@ -625,17 +939,26 @@ public final class RitualsArea {
             @Field(name = "Issue Key", type = "Text") String issueKey,
             @Field(name = "Start Date time", type = "Date") Long startDateTime,
             @Field(name = "Time Spent", type = "Text") String timeSpent) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Add Worklog");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_WORK_LOG_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.TICKET_ID, issueKey));
             if (validationResults.isEmpty()) {
                 issueDao.addWorklog(timeSpent, startDateTime, issueKey, "");
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_WORK_LOG_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of(
                         "Is successful", true));
             } else {
                 String stateId = UUID.randomUUID().toString();
                 internalStateManager.put(stateId, JiraConstants.GSON_BUILDER.toJson(Map.of(VALIDATION_RESULT,
                         validationResults, "Start Date time", startDateTime, "Time Spent", timeSpent)));
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_WORK_LOG_REQUEST_SUCCESS, 1);
                 return responseGenerator.generateConfirmationResponse(
                         ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                         "confirmReenterAddWorkLog", Map.of(
@@ -643,31 +966,53 @@ public final class RitualsArea {
                                 JiraResources.TICKET_ID, issueKey));
             }
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Add Worklog", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_WORK_LOG_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Add Worklog", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_WORK_LOG_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Add Worklog", cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ADD_WORK_LOG_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred in work log",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Add Worklog");
+            }
         }
     }
 
-    @CatalogRequest(id = "localDomainRequest_3f532311-cd58-4a79-a727-5d12a9409319", name = "Get Issue By Key", description = "Get issue by issue key", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_3f532311-cd58-4a79-a727-5d12a9409319", name = "Get Issue By Key", description = "Get issue by issue key", area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM, tool = true)
     @Field.Desc(name = "Issue", type = "Entity(Issue)")
     public ExtensionResponse getIssueByKey(
             @Field(name = "Issue Key", type = "Text") String issueKey) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Get Issue by Key");
+        boolean auditRecorded = false;
         try {
-            LOGGER.info("Get Issue By Key stage 1 initialised : {}", issueKey);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUE_BY_KEY_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
+            LOGGER.info("Get Issue By Key: {}", issueKey);
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.TICKET_ID, issueKey));
             if (validationResults.isEmpty()) {
-                return ExtensionResponseFactory.create(Map.of(
-                        "Issue", issueDao.getIssueFinal(issueKey)));
+                Issue issue = issueDao.getIssueFinal(issueKey);
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUE_BY_KEY_REQUEST_SUCCESS, 1);
+                return ExtensionResponseFactory.create(Map.of("Issue", issue));
             } else {
                 String stateId = UUID.randomUUID().toString();
                 internalStateManager.put(stateId, GSON_BUILDER.toJson(Map.of(VALIDATION_RESULT, validationResults)));
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUE_BY_KEY_REQUEST_SUCCESS, 1);
                 return responseGenerator.generateConfirmationResponse(
                         ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                         "confirmReenterGetIssueByKey", Map.of(
@@ -675,32 +1020,54 @@ public final class RitualsArea {
                                 JiraResources.TICKET_ID, issueKey));
             }
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Get Issue by Key", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUE_BY_KEY_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get Issue by Key", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUE_BY_KEY_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get Issue by Key", cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ISSUE_BY_KEY_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while getting issue by issue key.",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Get Issue by Key");
+            }
         }
     }
 
-    @CatalogRequest(id = "localDomainRequest_42220d05-f6f1-447c-918a-b3efbf6e17e2", name = "Assign Child Issue to Epic", description = "Assign Child Issue to Epic", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_42220d05-f6f1-447c-918a-b3efbf6e17e2", name = "Assign Child Issue to Epic", description = "Assign Child Issue to Epic", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM, tool = true)
     @Field(name = "Is successful", type = "Switch", required = false)
     public ExtensionResponse assignChildIssueToEpic(
             @Field(name = "Child Issue Key", type = "Text") String childIssueKey,
             @Field(name = "Parent Epic Key", type = "Text") String parentEpicKey) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Assign Child Issue to Epic");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_CHILD_ISSUE_TO_EPIC_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.CHILD_ISSUE_KEY, childIssueKey,
                             Validator.ValidationResource.PARENT_EPIC_KEY, parentEpicKey));
             if (validationResults.isEmpty()) {
                 issueDao.assignChildIssueToEpic(childIssueKey, parentEpicKey);
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_CHILD_ISSUE_TO_EPIC_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of("Is successful", true));
             } else {
                 String stateId = UUID.randomUUID().toString();
                 internalStateManager.put(stateId, GSON_BUILDER.toJson(Map.of(VALIDATION_RESULT, validationResults)));
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_CHILD_ISSUE_TO_EPIC_REQUEST_SUCCESS, 1);
                 return responseGenerator.generateConfirmationResponse(
                         ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                         "confirmReenterAssignChildIssueToEpic", Map.of(
@@ -709,31 +1076,53 @@ public final class RitualsArea {
                                 parentEpicKey));
             }
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Assign Child Issue to Epic", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_CHILD_ISSUE_TO_EPIC_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Assign Child Issue to Epic", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_CHILD_ISSUE_TO_EPIC_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Assign Child Issue to Epic", cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_CHILD_ISSUE_TO_EPIC_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while assigning child issue to parent epic.",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Assign Child Issue to Epic");
+            }
         }
     }
 
-    @CatalogRequest(id = "localDomainRequest_0e9b3e9b-3e15-43e9-8530-de879cf03e69", name = "Assign Issue to Epic", description = "Assign Issue to Epic", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_0e9b3e9b-3e15-43e9-8530-de879cf03e69", name = "Assign Issue to Epic", description = "Assign Issue to Epic", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM, tool = true)
     @Field(name = "Is successful", type = "Switch", required = false)
     public ExtensionResponse assignIssueToEpic(
             @Field(name = "Issue Key", type = "Text") String issueKey,
             @Field(name = "Epic Key", type = "Text") String epicKey) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Assign Issue to Epic");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_ISSUE_TO_EPIC_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator.validate(Map.of(
                     Validator.ValidationResource.TICKET_ID, issueKey, Validator.ValidationResource.EPIC_KEY, epicKey));
             if (validationResults.isEmpty()) {
                 issueDao.assignIssueToEpic(issueKey, epicKey);
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_ISSUE_TO_EPIC_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of("Is successful", true));
             } else {
                 String stateId = UUID.randomUUID().toString();
                 internalStateManager.put(stateId, GSON_BUILDER.toJson(Map.of(VALIDATION_RESULT, validationResults)));
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_ISSUE_TO_EPIC_REQUEST_SUCCESS, 1);
                 return responseGenerator.generateConfirmationResponse(
                         ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                         "confirmReenterAssignIssueToEpic", Map.of(
@@ -741,36 +1130,58 @@ public final class RitualsArea {
                                 JiraResources.TICKET_ID, issueKey, JiraResources.EPIC_KEY, epicKey));
             }
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Assign Issue to Epic", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_ISSUE_TO_EPIC_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Assign Issue to Epic", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_ISSUE_TO_EPIC_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Assign Issue to Epic", cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.ASSIGN_ISSUE_TO_EPIC_REQUEST_FAILURE, 1);
             JSONObject jsonObject = new JSONObject(cause.getMessage());
             JSONArray errorMessages = (JSONArray) jsonObject.get("errorMessages");
             return ExtensionResponseFactory.create(cause,
                     "Error occurred while assigning issue to epic." + errorMessages.get(0).toString(),
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Assign Issue to Epic");
+            }
         }
     }
 
     @CatalogRequest(id = "localDomainRequest_ded0f2e0-8a1e-4b6a-9f7a-2c8a927e1f4b",
             name = "Get all comments",
             description = "Get all comments from an issue",
-            area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM)
-    @Field.Desc(name = "Comments", type = "[ { Comment Body: Text, Author ID: Text, Author Name: Text, Date Created: Date } ]")
+            area = "Rituals", type = CatalogRequest.Type.QUERY_SYSTEM, tool = true)
+    @Field.Desc(name = "Comments", type = "[ { Comment Body: Text, Author ID: Text, Author Name: Text, Date Created: Text } ]")
     public ExtensionResponse getAllComments(
             @Field(name = "Issue Key", type = "Text") String issueKey) {
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Get All Comments");
+        boolean auditRecorded = false;
         try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ALL_COMMENTS_REQUEST_COUNT, 1);
+            if (requestContext.invokeAsUser()) {
+                issueDao.validateCredentials();
+            }
             List<ValidationOrchestrator.ValidationResult> validationResults = validationOrchestrator
                     .validate(Map.of(Validator.ValidationResource.TICKET_ID, issueKey));
             if (validationResults.isEmpty()) {
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ALL_COMMENTS_REQUEST_SUCCESS, 1);
                 return ExtensionResponseFactory.create(Map.of(
                         "Comments", issueDao.getComments(issueKey)));
             } else {
                 String stateId = UUID.randomUUID().toString();
                 internalStateManager.put(stateId, GSON_BUILDER.toJson(Map.of(VALIDATION_RESULT, validationResults)));
+                telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ALL_COMMENTS_REQUEST_SUCCESS, 1);
                 return responseGenerator.generateConfirmationResponse(
                         ExtensionResponse.Error.ExceptionType.INPUT_ERROR, validationResults,
                         "confirmReenterGetAllComments", Map.of(
@@ -778,15 +1189,28 @@ public final class RitualsArea {
                                 JiraResources.TICKET_ID, issueKey));
             }
         } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Get All Comments", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ALL_COMMENTS_REQUEST_FAILURE, 1);
             throw cause;
         } catch (IllegalCallerException cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get All Comments", cause);
             LOGGER.error(cause.getMessage(), cause);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ALL_COMMENTS_REQUEST_FAILURE, 1);
             throw new RuntimeException(cause.getMessage(), cause);
         } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get All Comments", cause);
             LOGGER.error("Error occurred while getting all comments from issue :{}", cause.getMessage());
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_ALL_COMMENTS_REQUEST_FAILURE, 1);
             return ExtensionResponseFactory.create(cause, "Error occurred while getting all comments from issue",
                     ExtensionResponse.Error.ExceptionType.SYSTEM_ERROR);
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Get All Comments");
+            }
         }
     }
 
@@ -797,22 +1221,62 @@ public final class RitualsArea {
     public Map<String, Object> getNotification(
             @Field(name = "eventName", type = "Text") String eventName,
             @Field(name = "eventData", type = "FreeForm") FreeForm eventData) {
-        if (eventName.equals(JIRA_UPDATES)) {
-            WebhookDao webhookDao = new WebhookDao();
-            return webhookDao.parseWebhookResponse((String) eventData.get(UPDATES_ON_JIRA));
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Get Notification");
+        boolean auditRecorded = false;
+        try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_NOTIFICATION_REQUEST_COUNT, 1);
+            if (eventName.equals(JIRA_UPDATES)) {
+                WebhookDao webhookDao = new WebhookDao();
+                return webhookDao.parseWebhookResponse((String) eventData.get(UPDATES_ON_JIRA));
+            }
+            return Map.of();
+        } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get Notification", cause);
+            throw cause;
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Get Notification");
+            }
         }
-        return Map.of();
     }
 
-    @CatalogRequest(id = "localDomainRequest_0a5052cd-bd83-4a0a-82c3-861ed7090a19", name = "Get Custom Field Value", description = "Get data of custom field", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM)
+    @CatalogRequest(id = "localDomainRequest_0a5052cd-bd83-4a0a-82c3-861ed7090a19", name = "Get Custom Field Value", description = "Get data of custom field", area = "Rituals", type = CatalogRequest.Type.CHANGE_SYSTEM, tool = true)
     @Field.Desc(name = "Response", type = "[ Text ]", required = false)
     public List<String> getCustomFieldValue(
             @Field.Text(name = "Issue Key", required = true, attributes = {
                     @Attribute(name = "visualWidth", value = "S")}, options = {}) String issueKey,
             @Field.Text(name = "Custom Field", required = true, attributes = {
                     @Attribute(name = "visualWidth", value = "S")}, options = {}) String customField) {
-        return issueDao.getCustomIssue(issueKey, customField);
-
+        String invokerId = requestContext.getInvokerId();
+        jsmAuditService.triggered(invokerId, "Get Custom Field Value");
+        boolean auditRecorded = false;
+        try {
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_CUSTOM_FIELD_VALUE_REQUEST_COUNT, 1);
+            LOGGER.info("Get Custom Field Value initiated - Issue Key: {}, Custom Field: {}", issueKey, customField);
+            List<String> result = issueDao.getCustomIssue(issueKey, customField);
+            LOGGER.info("Get Custom Field Value completed - Issue Key: {}, Custom Field: {}, Result size: {}, Result: {}",
+                    issueKey, customField, result.size(), result);
+            telemetryMetrics.incrementCounter(TelemetryConstants.RitualsArea.GET_CUSTOM_FIELD_VALUE_REQUEST_SUCCESS, 1);
+            return result;
+        } catch (MustAuthorizeException cause) {
+            auditRecorded = true;
+            jsmAuditService.authFailure(invokerId, "Get Custom Field Value", cause);
+            LOGGER.error("Error occurred while getting custom field value - Issue Key: {}, Custom Field: {}, Error: {}",
+                    issueKey, customField, cause.getMessage(), cause);
+            throw cause;
+        } catch (Exception cause) {
+            auditRecorded = true;
+            jsmAuditService.failure(invokerId, "Get Custom Field Value", cause);
+            LOGGER.error("Error occurred while getting custom field value - Issue Key: {}, Custom Field: {}, Error: {}",
+                    issueKey, customField, cause.getMessage(), cause);
+            throw cause;
+        } finally {
+            if (!auditRecorded) {
+                jsmAuditService.success(invokerId, "Get Custom Field Value");
+            }
+        }
     }
 
 }

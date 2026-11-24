@@ -13,11 +13,12 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.impl;
 
+import app.krista.sdk.atlassian.jql.JQLBuilder;
 import app.krista.extensions.devsecops.development.jira.catalog.entities.Issue;
 import app.krista.extensions.devsecops.development.jira.services.ReleaseSummaryResponse;
 import org.jvnet.hk2.annotations.Service;

@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.services;
@@ -657,6 +657,180 @@ class JiraIssueIntegrationTest {
         fields.add("components", components);
 
         return fields;
+    }
+
+    // ==================== Last Modified Date Tests ====================
+
+    @Test
+    @DisplayName("Should parse Last Modified Date with standard ISO 8601 format (with colon in timezone)")
+    void testGetIssue_LastModifiedDate_StandardISO8601() {
+        JsonObject issueObject = new JsonObject();
+        issueObject.addProperty("id", "12345");
+        issueObject.addProperty("key", "TEST-100");
+
+        JsonObject fields = new JsonObject();
+        fields.addProperty("updated", "2026-02-12T11:19:51.462+05:30");
+        fields.addProperty("summary", "Test Issue");
+        issueObject.add("fields", fields);
+
+        JiraIssue jiraIssue = JiraIssue.create(issueObject);
+        Issue issue = jiraIssue.getIssue();
+
+        assertNotNull(issue.lastModifiedDate, "Last Modified Date should not be null");
+        // Verify it's a reasonable timestamp (between 2020 and 2030)
+        assertTrue(issue.lastModifiedDate > 1577836800000L, "Timestamp should be after 2020");
+        assertTrue(issue.lastModifiedDate < 1893456000000L, "Timestamp should be before 2030");
+    }
+
+    @Test
+    @DisplayName("Should parse Last Modified Date with Jira non-standard format (without colon in timezone)")
+    void testGetIssue_LastModifiedDate_JiraNonStandardFormat() {
+        JsonObject issueObject = new JsonObject();
+        issueObject.addProperty("id", "12345");
+        issueObject.addProperty("key", "TEST-101");
+
+        JsonObject fields = new JsonObject();
+        fields.addProperty("updated", "2026-02-12T11:19:51.462+0530");
+        fields.addProperty("summary", "Test Issue");
+        issueObject.add("fields", fields);
+
+        JiraIssue jiraIssue = JiraIssue.create(issueObject);
+        Issue issue = jiraIssue.getIssue();
+
+        assertNotNull(issue.lastModifiedDate, "Last Modified Date should not be null");
+        // Both formats should produce the same result
+        assertTrue(issue.lastModifiedDate > 1577836800000L, "Timestamp should be after 2020");
+        assertTrue(issue.lastModifiedDate < 1893456000000L, "Timestamp should be before 2030");
+    }
+
+    @Test
+    @DisplayName("Should parse Last Modified Date with UTC/Zulu time format")
+    void testGetIssue_LastModifiedDate_ZuluTime() {
+        JsonObject issueObject = new JsonObject();
+        issueObject.addProperty("id", "12345");
+        issueObject.addProperty("key", "TEST-102");
+
+        JsonObject fields = new JsonObject();
+        fields.addProperty("updated", "2026-02-12T05:49:51.462Z");
+        fields.addProperty("summary", "Test Issue");
+        issueObject.add("fields", fields);
+
+        JiraIssue jiraIssue = JiraIssue.create(issueObject);
+        Issue issue = jiraIssue.getIssue();
+
+        assertNotNull(issue.lastModifiedDate, "Last Modified Date should not be null");
+        assertTrue(issue.lastModifiedDate > 1577836800000L, "Timestamp should be after 2020");
+        assertTrue(issue.lastModifiedDate < 1893456000000L, "Timestamp should be before 2030");
+    }
+
+    @Test
+    @DisplayName("Should parse Last Modified Date with negative timezone offset")
+    void testGetIssue_LastModifiedDate_NegativeTimezone() {
+        JsonObject issueObject = new JsonObject();
+        issueObject.addProperty("id", "12345");
+        issueObject.addProperty("key", "TEST-103");
+
+        JsonObject fields = new JsonObject();
+        fields.addProperty("updated", "2026-02-11T21:49:51.462-0800");
+        fields.addProperty("summary", "Test Issue");
+        issueObject.add("fields", fields);
+
+        JiraIssue jiraIssue = JiraIssue.create(issueObject);
+        Issue issue = jiraIssue.getIssue();
+
+        assertNotNull(issue.lastModifiedDate, "Last Modified Date should not be null");
+        assertTrue(issue.lastModifiedDate > 1577836800000L, "Timestamp should be after 2020");
+        assertTrue(issue.lastModifiedDate < 1893456000000L, "Timestamp should be before 2030");
+    }
+
+    @Test
+    @DisplayName("Should return null when 'updated' field is missing")
+    void testGetIssue_LastModifiedDate_MissingField() {
+        JsonObject issueObject = new JsonObject();
+        issueObject.addProperty("id", "12345");
+        issueObject.addProperty("key", "TEST-104");
+
+        JsonObject fields = new JsonObject();
+        fields.addProperty("summary", "Test Issue");
+        // No 'updated' field
+        issueObject.add("fields", fields);
+
+        JiraIssue jiraIssue = JiraIssue.create(issueObject);
+        Issue issue = jiraIssue.getIssue();
+
+        assertNull(issue.lastModifiedDate, "Last Modified Date should be null when field is missing");
+    }
+
+    @Test
+    @DisplayName("Should return null when 'updated' field is null")
+    void testGetIssue_LastModifiedDate_NullField() {
+        JsonObject issueObject = new JsonObject();
+        issueObject.addProperty("id", "12345");
+        issueObject.addProperty("key", "TEST-105");
+
+        JsonObject fields = new JsonObject();
+        fields.addProperty("summary", "Test Issue");
+        fields.add("updated", null);
+        issueObject.add("fields", fields);
+
+        JiraIssue jiraIssue = JiraIssue.create(issueObject);
+        Issue issue = jiraIssue.getIssue();
+
+        assertNull(issue.lastModifiedDate, "Last Modified Date should be null when field value is null");
+    }
+
+    @Test
+    @DisplayName("Should return null when fields object is null")
+    void testGetIssue_LastModifiedDate_NullFields() {
+        JsonObject issueObject = new JsonObject();
+        issueObject.addProperty("id", "12345");
+        issueObject.addProperty("key", "TEST-106");
+        // No fields object
+
+        JiraIssue jiraIssue = JiraIssue.create(issueObject);
+        Issue issue = jiraIssue.getIssue();
+
+        assertNull(issue.lastModifiedDate, "Last Modified Date should be null when fields object is null");
+    }
+
+    @Test
+    @DisplayName("Should return null when date format is invalid")
+    void testGetIssue_LastModifiedDate_InvalidFormat() {
+        JsonObject issueObject = new JsonObject();
+        issueObject.addProperty("id", "12345");
+        issueObject.addProperty("key", "TEST-107");
+
+        JsonObject fields = new JsonObject();
+        fields.addProperty("summary", "Test Issue");
+        fields.addProperty("updated", "invalid-date-format");
+        issueObject.add("fields", fields);
+
+        JiraIssue jiraIssue = JiraIssue.create(issueObject);
+        Issue issue = jiraIssue.getIssue();
+
+        assertNull(issue.lastModifiedDate, "Last Modified Date should be null when date format is invalid");
+    }
+
+    @Test
+    @DisplayName("Should parse Last Modified Date without milliseconds")
+    void testGetIssue_LastModifiedDate_NoMilliseconds() {
+        JsonObject issueObject = new JsonObject();
+        issueObject.addProperty("id", "12345");
+        issueObject.addProperty("key", "TEST-108");
+
+        JsonObject fields = new JsonObject();
+        fields.addProperty("updated", "2026-02-12T11:19:51+0530");
+        fields.addProperty("summary", "Test Issue");
+        issueObject.add("fields", fields);
+
+        JiraIssue jiraIssue = JiraIssue.create(issueObject);
+        Issue issue = jiraIssue.getIssue();
+
+        assertNotNull(issue.lastModifiedDate, "Last Modified Date should not be null");
+        assertTrue(issue.lastModifiedDate > 1577836800000L, "Timestamp should be after 2020");
+        assertTrue(issue.lastModifiedDate < 1893456000000L, "Timestamp should be before 2030");
+        // Verify milliseconds are 0 (timestamp should be divisible by 1000)
+        assertEquals(0, issue.lastModifiedDate % 1000, "Milliseconds should be 0 when not specified");
     }
 }
 

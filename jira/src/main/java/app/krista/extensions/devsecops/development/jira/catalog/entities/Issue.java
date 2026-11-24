@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.catalog.entities;
@@ -91,6 +91,9 @@ public class Issue {
     @Field(name = "Request Type", type = "Text", required = false)
     public String requestType;
 
+    @Field.Date(name = "Last Modified Date", required = false, includeTimeOfDay = true, allowPast = true, allowToday = true, allowFuture = true, attributes = {@Attribute(name = "visualWidth", value = "S"), @Attribute(name = "dateFormat", value = "'MMM DD, yyyy h:mm:ss a'")}, options = {})
+    public Long lastModifiedDate;
+
 
     public Map<String, Object> toFields() {
         Issue issue = this;
@@ -110,6 +113,7 @@ public class Issue {
         fieldMap.put("Labels", issue.labels);
         fieldMap.put("Components", issue.components);
         fieldMap.put("Request Type", issue.requestType);
+        fieldMap.put("Last Modified Date", issue.lastModifiedDate);
         return fieldMap;
     }
 

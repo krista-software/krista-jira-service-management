@@ -13,33 +13,29 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.api;
 
+import app.krista.extensions.devsecops.development.jira.JiraAttributes;
 import app.krista.extensions.devsecops.development.jira.authentication.JiraService;
-import app.krista.extensions.devsecops.development.jira.util.JiraConstants;
 import app.krista.extensions.devsecops.development.jira.util.SessionManager;
 import app.krista.extensions.util.EventHandler;
 import app.krista.ksdk.authentication.AuthorizationListener;
 import app.krista.ksdk.context.AuthorizationContext;
 import app.krista.ksdk.context.RequestContext;
-import app.krista.model.base.FreeForm;
+import app.krista.sdk.atlassian.extension.authentication.AbstractAtlassianAuthResource;
 import com.github.scribejava.core.model.OAuth2AccessToken;
 import com.github.scribejava.core.oauth.OAuth20Service;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
-import javax.ws.rs.core.Response;
 import java.io.IOException;
-import java.util.Map;
 import java.util.concurrent.ExecutionException;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @DisplayName("AuthenticationResource Integration Tests")
@@ -53,6 +49,7 @@ class AuthenticationResourceIntegrationTest {
     private AuthorizationListener authorizationListener;
     private EventHandler eventHandler;
     private OAuth20Service oAuth20Service;
+    private JiraAttributes jiraAttributes;
 
     @BeforeEach
     void setUp() {
@@ -63,8 +60,11 @@ class AuthenticationResourceIntegrationTest {
         authorizationListener = mock(AuthorizationListener.class);
         eventHandler = mock(EventHandler.class);
         oAuth20Service = mock(OAuth20Service.class);
+        jiraAttributes = mock(JiraAttributes.class);
 
         when(jiraService.getOauthService()).thenReturn(oAuth20Service);
+        when(oAuth20Service.getApiKey()).thenReturn("client123");
+        when(oAuth20Service.getApiSecret()).thenReturn("secret456");
 
         authenticationResource = new AuthenticationResource(
                 sessionManager,
@@ -72,16 +72,15 @@ class AuthenticationResourceIntegrationTest {
                 requestContext,
                 authorizationContext,
                 authorizationListener,
-                eventHandler
-        );
+                eventHandler,
+                jiraAttributes);
     }
 
     @Test
-    @DisplayName("Should successfully handle OAuth callback when authenticated")
-    void testGetCallBack_Success_Authenticated() throws IOException, ExecutionException, InterruptedException {
-        // Arrange
+    @DisplayName("Should successfully handle OAuth callback with app-wide token storage")
+    void testGetCallBack_Success_AppWide() throws IOException, ExecutionException, InterruptedException {
+        // Arrange — no accountId in state → app-wide storage
         String code = "test-auth-code";
-        String state = "test-state";
         String invokerId = "test-invoker-id";
         String refreshToken = "test-refresh-token";
 
@@ -89,23 +88,22 @@ class AuthenticationResourceIntegrationTest {
         when(accessToken.getRefreshToken()).thenReturn(refreshToken);
         when(oAuth20Service.getAccessToken(code)).thenReturn(accessToken);
         when(requestContext.getInvokerId()).thenReturn(invokerId);
-        when(authorizationContext.isAuthenticated()).thenReturn(true);
 
-        // Act
-        String result = authenticationResource.getCallBack(code, state);
+        // Act — null state → app-wide key
+        String result = authenticationResource.getCallBack(code, null);
 
         // Assert
-        assertEquals("Authentication successful. Please close the window and proceed ahead.", result);
-        verify(sessionManager).storeRefToken(state + "#" + invokerId, refreshToken);
+        assertEquals(AbstractAtlassianAuthResource.CALLBACK_SUCCESS_HTML, result);
+        verify(sessionManager).store("client123#secret456#" + invokerId, refreshToken);
         verify(authorizationListener).authorized();
     }
 
     @Test
-    @DisplayName("Should return unsuccessful message when not authenticated")
-    void testGetCallBack_NotAuthenticated() throws IOException, ExecutionException, InterruptedException {
+    @DisplayName("Should store token under user-specific key when state contains accountId")
+    void testGetCallBack_Success_PerUser() throws IOException, ExecutionException, InterruptedException {
         // Arrange
         String code = "test-auth-code";
-        String state = "test-state";
+        String state = "test-account-id";
         String invokerId = "test-invoker-id";
         String refreshToken = "test-refresh-token";
 
@@ -113,135 +111,102 @@ class AuthenticationResourceIntegrationTest {
         when(accessToken.getRefreshToken()).thenReturn(refreshToken);
         when(oAuth20Service.getAccessToken(code)).thenReturn(accessToken);
         when(requestContext.getInvokerId()).thenReturn(invokerId);
-        when(authorizationContext.isAuthenticated()).thenReturn(false);
 
-        // Act
+        // Act — state present → user-specific key
         String result = authenticationResource.getCallBack(code, state);
 
         // Assert
-        assertEquals("Authentication is unsuccessful", result);
-        verify(sessionManager).storeRefToken(state + "#" + invokerId, refreshToken);
+        assertEquals(AbstractAtlassianAuthResource.CALLBACK_SUCCESS_HTML, result);
+        verify(sessionManager).store(state + "#" + invokerId, refreshToken);
+        verify(authorizationListener).authorized();
+    }
+
+    @Test
+    @DisplayName("Should return HTML error page when no authorization code received")
+    void testGetCallBack_NullCode() {
+        // Act
+        String result = authenticationResource.getCallBack(null, "test-state");
+
+        // Assert
+        assertTrue(result.contains("Authentication Failed"),
+                "Expected HTML error page but got: " + result.substring(0, Math.min(200, result.length())));
+        verifyNoInteractions(oAuth20Service);
+    }
+
+    @Test
+    @DisplayName("Should return HTML error page when refresh token is missing")
+    void testGetCallBack_NoRefreshToken() throws IOException, ExecutionException, InterruptedException {
+        // Arrange
+        String code = "test-auth-code";
+        String invokerId = "test-invoker-id";
+
+        OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
+        when(accessToken.getRefreshToken()).thenReturn(null);
+        when(oAuth20Service.getAccessToken(code)).thenReturn(accessToken);
+        when(requestContext.getInvokerId()).thenReturn(invokerId);
+
+        // Act
+        String result = authenticationResource.getCallBack(code, null);
+
+        // Assert
+        assertTrue(result.contains("Authentication Failed"),
+                "Expected HTML error page but got: " + result.substring(0, Math.min(200, result.length())));
         verify(authorizationListener, never()).authorized();
     }
 
     @Test
-    @DisplayName("Should throw IllegalArgumentException when requestContext throws exception")
-    void testGetCallBack_ThrowsException() throws IOException, ExecutionException, InterruptedException {
+    @DisplayName("Should return HTML error page when OAuth service is null")
+    void testGetCallBack_NullOAuthService() {
+        // Arrange
+        when(jiraService.getOauthService()).thenReturn(null);
+        when(requestContext.getInvokerId()).thenReturn("test-invoker");
+
+        // Act
+        String result = authenticationResource.getCallBack("test-code", "test-state");
+
+        // Assert
+        assertTrue(result.contains("Authentication Failed"),
+                "Expected HTML error page but got: " + result.substring(0, Math.min(200, result.length())));
+    }
+
+    @Test
+    @DisplayName("Should return HTML error page when an exception occurs during callback")
+    void testGetCallBack_ExceptionReturnsErrorPage() throws IOException, ExecutionException, InterruptedException {
         // Arrange
         String code = "test-auth-code";
-        String state = "test-state";
+
+        when(oAuth20Service.getAccessToken(code)).thenThrow(new RuntimeException("Token exchange failed"));
+        when(requestContext.getInvokerId()).thenReturn("test-invoker");
+
+        // Act
+        String result = authenticationResource.getCallBack(code, "test-state");
+
+        // Assert
+        assertTrue(result.contains("Authentication Failed"),
+                "Expected HTML error page but got: " + result.substring(0, Math.min(200, result.length())));
+        assertTrue(result.contains("Token exchange failed"),
+                "Expected error message in page but got: " + result.substring(0, Math.min(200, result.length())));
+    }
+
+    @Test
+    @DisplayName("Should not fail when authorizationListener throws")
+    void testGetCallBack_ListenerFailureIgnored() throws Exception {
+        // Arrange
+        String code = "test-auth-code";
+        String invokerId = "test-invoker-id";
         String refreshToken = "test-refresh-token";
-
-        OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
-        when(accessToken.getRefreshToken()).thenReturn(refreshToken);
-        when(oAuth20Service.getAccessToken(code)).thenReturn(accessToken);
-        when(requestContext.getInvokerId()).thenThrow(new RuntimeException("Context error"));
-
-        // Act & Assert
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                authenticationResource.getCallBack(code, state)
-        );
-
-        assertTrue(exception.getMessage().contains("Error occurred during callback"));
-        assertNotNull(exception.getCause());
-    }
-
-    @Test
-    @DisplayName("Should get auth token response successfully")
-    void testGetAuthTokenResponse_Success() throws IOException, ExecutionException, InterruptedException {
-        // Arrange
-        String code = "test-code";
-        String refreshToken = "test-refresh-token";
-
-        OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
-        when(accessToken.getRefreshToken()).thenReturn(refreshToken);
-        when(oAuth20Service.getAccessToken(code)).thenReturn(accessToken);
-
-        // Act
-        Map<String, Object> result = authenticationResource.getAuthTokenResponse(code);
-
-        // Assert
-        assertNotNull(result);
-        assertEquals(refreshToken, result.get(JiraConstants.REFRESH_TOKEN));
-        verify(oAuth20Service).getAccessToken(code);
-    }
-
-    @Test
-    @DisplayName("Should handle null code in getAuthTokenResponse")
-    void testGetAuthTokenResponse_NullCode() {
-        // Act & Assert - Should throw NullPointerException due to Objects.requireNonNull
-        assertThrows(NullPointerException.class, () ->
-                authenticationResource.getAuthTokenResponse(null)
-        );
-    }
-
-    @Test
-    @DisplayName("Should handle IOException in getAuthTokenResponse")
-    void testGetAuthTokenResponse_IOException() throws IOException, ExecutionException, InterruptedException {
-        // Arrange
-        String code = "test-code";
-        when(oAuth20Service.getAccessToken(code)).thenThrow(new IOException("Network error"));
-
-        // Act
-        Map<String, Object> result = authenticationResource.getAuthTokenResponse(code);
-
-        // Assert
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
-    }
-
-    @Test
-    @DisplayName("Should handle ExecutionException in getAuthTokenResponse")
-    void testGetAuthTokenResponse_ExecutionException() throws IOException, ExecutionException, InterruptedException {
-        // Arrange
-        String code = "test-code";
-        when(oAuth20Service.getAccessToken(code)).thenThrow(new ExecutionException("Execution error", new RuntimeException()));
-
-        // Act
-        Map<String, Object> result = authenticationResource.getAuthTokenResponse(code);
-
-        // Assert
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
-    }
-
-    @Test
-    @DisplayName("Should handle InterruptedException in getAuthTokenResponse")
-    void testGetAuthTokenResponse_InterruptedException() throws IOException, ExecutionException, InterruptedException {
-        // Arrange
-        String code = "test-code";
-        when(oAuth20Service.getAccessToken(code)).thenThrow(new InterruptedException("Thread interrupted"));
-
-        // Act
-        Map<String, Object> result = authenticationResource.getAuthTokenResponse(code);
-
-        // Assert
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
-        assertTrue(Thread.interrupted()); // Verify interrupt flag was set
-    }
-
-    @Test
-    @DisplayName("Should handle callback with special characters in state")
-    void testGetCallBack_SpecialCharactersInState() throws IOException, ExecutionException, InterruptedException {
-        // Arrange
-        String code = "test-code";
-        String state = "state-with-special-chars-!@#$%";
-        String invokerId = "invoker-123";
-        String refreshToken = "refresh-token";
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn(refreshToken);
         when(oAuth20Service.getAccessToken(code)).thenReturn(accessToken);
         when(requestContext.getInvokerId()).thenReturn(invokerId);
-        when(authorizationContext.isAuthenticated()).thenReturn(true);
+        doThrow(new RuntimeException("listener boom")).when(authorizationListener).authorized();
 
-        // Act
-        String result = authenticationResource.getCallBack(code, state);
+        // Act — listener failure should NOT prevent success response
+        String result = authenticationResource.getCallBack(code, null);
 
-        // Assert
-        assertEquals("Authentication successful. Please close the window and proceed ahead.", result);
-        verify(sessionManager).storeRefToken(state + "#" + invokerId, refreshToken);
+        // Assert — still returns success HTML
+        assertEquals(AbstractAtlassianAuthResource.CALLBACK_SUCCESS_HTML, result);
+        verify(sessionManager).store("client123#secret456#" + invokerId, refreshToken);
     }
-
 }

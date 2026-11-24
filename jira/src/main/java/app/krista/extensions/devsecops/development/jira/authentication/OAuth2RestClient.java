@@ -13,24 +13,28 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
 
 import app.krista.extensions.devsecops.development.jira.util.JiraConstants;
+import app.krista.sdk.atlassian.client.AbstractOAuth2RestClient;
+import app.krista.sdk.atlassian.config.AtlassianProduct;
+import app.krista.sdk.atlassian.oauth.AccessibleResource;
+import app.krista.sdk.atlassian.oauth.AtlassianTokenSource;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mashape.unirest.http.HttpResponse;
 import com.mashape.unirest.http.JsonNode;
-import com.mashape.unirest.http.Unirest;
-import com.mashape.unirest.http.exceptions.UnirestException;
 import org.jvnet.hk2.annotations.Service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.inject.Inject;
-import javax.ws.rs.client.*;
+import javax.ws.rs.client.Entity;
+import javax.ws.rs.client.Invocation;
+import javax.ws.rs.client.WebTarget;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
@@ -38,128 +42,108 @@ import java.io.File;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * OAuth 2.0 (3LO) REST client for JSM, talking to the Atlassian API gateway.
+ *
+ * <p>The shared plumbing (cloud-id resolution and caching, gateway URL
+ * construction, bearer decoration, multipart upload) lives in the SDK's
+ * {@link AbstractOAuth2RestClient}; this class adds the JSM Service Desk
+ * gateway targets and the JQL/issue operations.</p>
+ */
 @Service
-public final class OAuth2RestClient implements RestClient {
+public final class OAuth2RestClient extends AbstractOAuth2RestClient implements RestClient {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(OAuth2RestClient.class);
-    private final JiraService oAuthService;
-    private JiraService.AccessibleResources accessibleResources = null;
+
     public static final String ATLASSIAN_URL = "https://api.atlassian.com/ex/jira/";
     public static final String JIRA_ENDPOINT = "/rest/api/3/";
 
     @Inject
     public OAuth2RestClient(JiraService jiraService) {
-        oAuthService = jiraService;
+        super(jiraService, AtlassianProduct.JIRA_SERVICE_MANAGEMENT);
     }
 
-    private WebTarget getWebTarget() {
-        Client client = ClientBuilder.newClient();
-        LOGGER.info("Jira Default Web Target Initialised");
-        String target = ATLASSIAN_URL + getAccessibleResources().getId() + JIRA_ENDPOINT;
-        LOGGER.info("Jira Default Web Target URL : {}", target);
-        return client.target(target);
+    /**
+     * Server-to-server (2LO) variant: same client, bearer tokens from a
+     * {@link app.krista.sdk.atlassian.oauth.ClientCredentialsTokenProvider}
+     * instead of the 3LO refresh-token flow.
+     */
+    public OAuth2RestClient(AtlassianTokenSource tokenSource) {
+        super(tokenSource, AtlassianProduct.JIRA_SERVICE_MANAGEMENT);
     }
 
+    /** Target for the Service Desk REST API on the gateway ({@code .../rest/servicedeskapi/}). */
     private WebTarget getJiraServiceManageWebTarget() {
-        Client client = ClientBuilder.newClient();
         LOGGER.info("Jira Service Management Web Target Initialised");
-        String target = ATLASSIAN_URL + getAccessibleResources().getId() + "/rest/servicedeskapi/";
-        LOGGER.info("Jira Service Management Web Target URL : {}", target);
-        return client.target(target);
+        return gatewayTarget(AtlassianProduct.SERVICE_DESK_API_PATH);
     }
 
+    /** Target for the legacy Service Desk management API on the gateway ({@code .../rest/servicedesk/1/servicedesk/}). */
     private WebTarget getJiraServiceAPIWebTarget() {
-        Client client = ClientBuilder.newClient();
         LOGGER.info("Jira Service Management Web Target Initialised");
-        String target = ATLASSIAN_URL + getAccessibleResources().getId() + "/rest/servicedesk/1/servicedesk/";
-        LOGGER.info("Jira Service Management Web Target URL : {}", target);
-        return client.target(target);
+        return gatewayTarget(AtlassianProduct.SERVICE_DESK_MANAGE_PATH);
     }
 
-    private WebTarget getWebTarget(String accountId, String invokerId) {
-        Client client = ClientBuilder.newClient();
-        String target = ATLASSIAN_URL + getAccessibleResources(accountId, invokerId).getId() + JIRA_ENDPOINT;
-        return client.target(target);
+    /** Legacy alias for {@link #getAccessibleResource()}. */
+    public AccessibleResource getAccessibleResources() {
+        return getAccessibleResource();
     }
 
-    public JiraService.AccessibleResources getAccessibleResources(String accountId, String invokerId) {
-        if (accessibleResources == null) {
-            accessibleResources = oAuthService.getAccessibleResources(accountId, invokerId);
-        }
-        return accessibleResources;
-    }
-
-    public JiraService.AccessibleResources getAccessibleResources() {
-        if (accessibleResources == null) {
-            accessibleResources = oAuthService.getAccessibleResources();
-        }
-        return accessibleResources;
+    /** Legacy alias for {@link #getAccessibleResource(String, String)}. */
+    public AccessibleResource getAccessibleResources(String accountId, String invokerId) {
+        return getAccessibleResource(accountId, invokerId);
     }
 
     @Override
     public Invocation.Builder getResourceInvoker(String resource, Map<String, Object> queryParams) {
         LOGGER.info("Default Resource URI : {}", resource);
-        WebTarget resourceTarget = getWebTarget().path(resource);
-        LOGGER.info("Getting Default Invocation Builder from get getResourceInvoker");
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
-        }
-        String token = oAuthService.getJiraToken();
-        //LOGGER.info("Getting Invocation Builder from get ResourceInvoker Value : {}",token);
+        WebTarget resourceTarget = applyQueryParams(getWebTarget().path(resource), queryParams);
+        String token = getOAuthService().getToken();
         LOGGER.info("Getting Invocation Builder from get ResourceInvoker");
-        return resourceTarget.request(MediaType.APPLICATION_JSON).header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + token);
+        return resourceTarget.request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + token);
+    }
+
+    @Override
+    public String getJiraAccessToken() {
+        return getOAuthService().getToken();
     }
 
     @Override
     public Invocation.Builder getJiraServiceResourceInvoker(String resource, Map<String, Object> queryParams) {
         LOGGER.info("Resource URI : {}", resource);
-        WebTarget resourceTarget = getJiraServiceManageWebTarget().path(resource);
+        WebTarget resourceTarget = applyQueryParams(getJiraServiceManageWebTarget().path(resource), queryParams);
+        String token = getOAuthService().getToken();
         LOGGER.info("Getting Invocation Builder from get JiraServiceResourceInvoker");
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
-        }
-        String token = oAuthService.getJiraToken();
-        // LOGGER.info("Getting Invocation Builder from get JiraServiceResourceInvoker Value : {}",token);
-        LOGGER.info("Getting Invocation Builder from get JiraServiceResourceInvoker");
-        return resourceTarget.request(MediaType.APPLICATION_JSON).header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + token);
-
+        return resourceTarget.request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + token);
     }
 
     @Override
     public <T> T fetch(String resource, Map<String, Object> queryParams, Class<T> type) {
         LOGGER.info("Default Resource URI : {}", resource);
-        WebTarget resourceTarget = getWebTarget().path(resource);
-        LOGGER.info("Getting fetch Default");
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
-        }
-        String token = oAuthService.getJiraToken();
-        // LOGGER.info("Getting Default Fetch Value : {}",token);
+        WebTarget resourceTarget = applyQueryParams(getWebTarget().path(resource), queryParams);
+        String token = getOAuthService().getToken();
         LOGGER.info("Getting Default Fetch on : {}", resourceTarget.getUri());
-        Response response = null;
         try {
-            Invocation.Builder invoker = resourceTarget.request(MediaType.APPLICATION_JSON).header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + token);
-            response = invoker.get();
+            Invocation.Builder invoker = resourceTarget.request(MediaType.APPLICATION_JSON)
+                    .header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + token);
+            Response response = invoker.get();
             return response.readEntity(type);
         } catch (RuntimeException cause) {
             LOGGER.error("Failed At fetch : {}", cause.getMessage(), cause);
         }
-
         return null;
     }
 
     @Override
     public <T> T fetchMiscellaneousService(String resource, Map<String, Object> queryParams, Class<T> type) {
         LOGGER.info("Resource URI : {}", resource);
-        WebTarget resourceTarget = getJiraServiceAPIWebTarget().path(resource);
-        LOGGER.info("Getting fetchMiscellaneousService");
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
-        }
-        String token = oAuthService.getJiraToken();
-//        LOGGER.info("Getting fetchJiraService Value : {}",token);
+        WebTarget resourceTarget = applyQueryParams(getJiraServiceAPIWebTarget().path(resource), queryParams);
+        String token = getOAuthService().getToken();
         LOGGER.info("Getting fetchMiscellaneousService after setting queryparam");
-        Invocation.Builder invoker = resourceTarget.request(MediaType.APPLICATION_JSON).header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + token);
+        Invocation.Builder invoker = resourceTarget.request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + token);
         Response response = invoker.get();
         return response.readEntity(type);
     }
@@ -167,15 +151,11 @@ public final class OAuth2RestClient implements RestClient {
     @Override
     public <T> T fetchJiraService(String resource, Map<String, Object> queryParams, Class<T> type) {
         LOGGER.info("Resource URI : {}", resource);
-        WebTarget resourceTarget = getJiraServiceManageWebTarget().path(resource);
-        LOGGER.info("Getting fetchJiraService");
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
-        }
-        String token = oAuthService.getJiraToken();
-//        LOGGER.info("Getting fetchJiraService Value : {}",token);
+        WebTarget resourceTarget = applyQueryParams(getJiraServiceManageWebTarget().path(resource), queryParams);
+        String token = getOAuthService().getToken();
         LOGGER.info("Getting fetchJiraService after setting queryparam");
-        Invocation.Builder invoker = resourceTarget.request(MediaType.APPLICATION_JSON).header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + token);
+        Invocation.Builder invoker = resourceTarget.request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + token);
         Response response = invoker.get();
         return response.readEntity(type);
     }
@@ -216,11 +196,9 @@ public final class OAuth2RestClient implements RestClient {
 
     @Override
     public <T> T fetchIssues(String accountId, String invokerId, String resource, Map<String, Object> queryParams, Class<T> type) {
-        WebTarget resourceTarget = getWebTarget(accountId, invokerId).path(resource);
-        for (Map.Entry<String, Object> entrySet : queryParams.entrySet()) {
-            resourceTarget = resourceTarget.queryParam(entrySet.getKey(), entrySet.getValue());
-        }
-        Invocation.Builder invoker = resourceTarget.request(MediaType.APPLICATION_JSON).header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + oAuthService.getJiraTokenForIssues(accountId, invokerId));
+        WebTarget resourceTarget = applyQueryParams(getWebTarget(accountId, invokerId).path(resource), queryParams);
+        Invocation.Builder invoker = resourceTarget.request(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + getOAuthService().getToken(accountId, invokerId));
         Response response = invoker.get();
         return response.readEntity(type);
     }
@@ -233,19 +211,8 @@ public final class OAuth2RestClient implements RestClient {
         if (files == null || files.isEmpty()) {
             throw new IllegalArgumentException("file not found");
         }
+        // Note: the duplicated slash after the API path is intentional — it preserves the legacy URL exactly.
         String callUrl = ATLASSIAN_URL + getAccessibleResources().getId() + JIRA_ENDPOINT + "/issue/" + resource + "/attachments";
-        HttpResponse<JsonNode> response;
-        try {
-            response = Unirest.post(callUrl).header(HttpHeaders.AUTHORIZATION, JiraConstants.BEARER + oAuthService.getJiraToken()).header(JiraConstants.ACCEPT, MediaType.APPLICATION_JSON).header(JiraConstants.X_ATLASSIAN_TOKEN, JiraConstants.NO_CHECK).field("file", files).asJson();
-        } catch (UnirestException cause) {
-            throw new IllegalStateException(cause);
-        }
-        return response;
+        return uploadMultipart(callUrl, files);
     }
-
-    @Override
-    public String getJiraAccessToken() {
-        return oAuthService.getJiraToken();
-    }
-
 }

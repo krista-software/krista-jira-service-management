@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira;
@@ -618,6 +618,7 @@ class JiraAttributesValidateOAuthFormatIntegrationTest {
             Map<String, Object> attributes = new HashMap<>();
             attributes.put(JiraAttributes.CLIENT_ID, "");
             attributes.put(JiraAttributes.CLIENT_SECRET, "a".repeat(64));
+            attributes.put(JiraAttributes.CREDENTIALS_MODE, "own");
 
             jiraAttributes.setAttributes(attributes);
 
@@ -628,10 +629,8 @@ class JiraAttributesValidateOAuthFormatIntegrationTest {
                 () -> jiraAttributes.validateAttributes(attributes)
             );
 
-            assertEquals(
-                "Either (Auth token, user name, host url) or (Client ID, Client secret) must be provided for authentication",
-                exception.getMessage()
-            );
+            assertTrue(exception.getMessage().contains("Please choose ONE authentication method"));
+            assertTrue(exception.getMessage().contains("For OAuth 2.0: Provide Client Id and Client Secret"));
         }
 
         @Test
@@ -723,6 +722,7 @@ class JiraAttributesValidateOAuthFormatIntegrationTest {
             // Arrange
             Map<String, Object> attributes = new HashMap<>();
             attributes.put(JiraAttributes.HOST_URL, "https://test.atlassian.net");
+            attributes.put(JiraAttributes.CREDENTIALS_MODE, "own");
 
             jiraAttributes.setAttributes(attributes);
 
@@ -732,10 +732,9 @@ class JiraAttributesValidateOAuthFormatIntegrationTest {
                 () -> jiraAttributes.validateAttributes(attributes)
             );
 
-            assertEquals(
-                "Either (Auth token, user name, host url) or (Client ID, Client secret) must be provided for authentication",
-                exception.getMessage()
-            );
+            assertTrue(exception.getMessage().contains("Please choose ONE authentication method"));
+            assertTrue(exception.getMessage().contains("For OAuth 2.0: Provide Client Id and Client Secret"));
+            assertTrue(exception.getMessage().contains("For Basic Auth: Provide Admin Auth Token, Admin User Name, and Host Url"));
         }
 
         @Test

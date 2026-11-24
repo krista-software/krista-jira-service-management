@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
@@ -24,6 +24,8 @@ import app.krista.extension.request.RoutingInfo;
 import app.krista.extension.request.protos.http.HttpProtocol;
 import app.krista.extensions.devsecops.development.jira.JiraAttributes;
 import app.krista.extensions.devsecops.development.jira.util.SessionManager;
+import app.krista.sdk.atlassian.oauth.AbstractAtlassianOAuthService;
+import app.krista.sdk.atlassian.oauth.AccessibleResource;
 import app.krista.ksdk.accounts.Account;
 import app.krista.ksdk.context.AuthorizationContext;
 import app.krista.ksdk.context.RequestContext;
@@ -36,8 +38,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.List;
-import java.util.concurrent.ExecutionException;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -82,8 +82,11 @@ class JiraServiceAccessibleResourcesTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker-id"))
+                .thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -100,12 +103,12 @@ class JiraServiceAccessibleResourcesTest {
         when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
         when(mockOAuthService.execute(any(OAuthRequest.class))).thenReturn(response);
 
-        java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+        java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
         field.setAccessible(true);
         field.set(jiraService, mockOAuthService);
 
         // Act
-        JiraService.AccessibleResources result = jiraService.getAccessibleResources();
+        AccessibleResource result = jiraService.getAccessibleResources();
 
         // Assert
         assertNotNull(result);
@@ -118,8 +121,11 @@ class JiraServiceAccessibleResourcesTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker-id"))
+                .thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -135,14 +141,13 @@ class JiraServiceAccessibleResourcesTest {
         when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
         when(mockOAuthService.execute(any(OAuthRequest.class))).thenReturn(response);
 
-        java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+        java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
         field.setAccessible(true);
         field.set(jiraService, mockOAuthService);
 
         // Act & Assert
-        IllegalStateException exception = assertThrows(IllegalStateException.class, () ->
-                jiraService.getAccessibleResources()
-        );
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> jiraService.getAccessibleResources());
         assertTrue(exception.getMessage().contains("Bad Request"));
     }
 
@@ -152,8 +157,11 @@ class JiraServiceAccessibleResourcesTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker-id"))
+                .thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -169,15 +177,14 @@ class JiraServiceAccessibleResourcesTest {
         when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
         when(mockOAuthService.execute(any(OAuthRequest.class))).thenReturn(response);
 
-        java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+        java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
         field.setAccessible(true);
         field.set(jiraService, mockOAuthService);
 
         // Act & Assert
-        IllegalStateException exception = assertThrows(IllegalStateException.class, () ->
-                jiraService.getAccessibleResources()
-        );
-        assertTrue(exception.getMessage().contains("didn't found any resources"));
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> jiraService.getAccessibleResources());
+        assertTrue(exception.getMessage().contains("No accessible resources found"));
     }
 
     @Test
@@ -186,8 +193,10 @@ class JiraServiceAccessibleResourcesTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("account-123#invoker-456")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#invoker-456")).thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -204,12 +213,12 @@ class JiraServiceAccessibleResourcesTest {
         when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
         when(mockOAuthService.execute(any(OAuthRequest.class))).thenReturn(response);
 
-        java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+        java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
         field.setAccessible(true);
         field.set(jiraService, mockOAuthService);
 
         // Act
-        JiraService.AccessibleResources result = jiraService.getAccessibleResources("account-123", "invoker-456");
+        AccessibleResource result = jiraService.getAccessibleResources("account-123", "invoker-456");
 
         // Assert
         assertNotNull(result);
@@ -222,15 +231,15 @@ class JiraServiceAccessibleResourcesTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn(null);
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker-id")).thenReturn(null);
 
         jiraService = new JiraService(requestContext, sessionManager, invoker, authorizationContext, jiraAttributes);
 
         // Act & Assert
-        assertThrows(MustAuthorizeException.class, () ->
-                jiraService.getAccessibleResources()
-        );
+        assertThrows(MustAuthorizeException.class, () -> jiraService.getAccessibleResources());
     }
 
     @Test
@@ -239,8 +248,11 @@ class JiraServiceAccessibleResourcesTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker-id"))
+                .thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -252,14 +264,12 @@ class JiraServiceAccessibleResourcesTest {
         when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
         when(mockOAuthService.execute(any(OAuthRequest.class))).thenThrow(new IOException("Test error"));
 
-        java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+        java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
         field.setAccessible(true);
         field.set(jiraService, mockOAuthService);
 
         // Act & Assert
-        assertThrows(IllegalStateException.class, () ->
-                jiraService.getAccessibleResources()
-        );
+        assertThrows(IllegalStateException.class, () -> jiraService.getAccessibleResources());
     }
 
     @Test
@@ -268,8 +278,11 @@ class JiraServiceAccessibleResourcesTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker-id"))
+                .thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -277,7 +290,7 @@ class JiraServiceAccessibleResourcesTest {
 
         Response response = mock(Response.class);
         when(response.getCode()).thenReturn(200);
-        String jsonResponse = "[{\"id\":\"resource-id-1\",\"scopes\":[\"read:jira-user\"]},{\"id\":\"resource-id-2\",\"scopes\":[\"read:jira-user\",\"read:jira-work\",\"write:jira-work\",\"manage:jira-data-provider\",\"manage:jira-project\",\"read:issue:jira\",\"write:issue:jira\",\"read:servicedesk-request\",\"write:servicedesk-request\",\"manage:servicedesk-customer\"]}]";
+        String jsonResponse = "[{\"id\":\"resource-id-1\",\"scopes\":[\"read:jira-user\"]},{\"id\":\"resource-id-2\",\"scopes\":[\"read:jira-user\",\"read:jira-work\",\"write:jira-work\",\"manage:jira-data-provider\",\"manage:jira-project\",\"read:issue:jira\",\"write:issue:jira\",\"read:servicedesk-request\",\"write:servicedesk-request\",\"manage:servicedesk-customer\",\"read:me\",\"read:confluence-content.summary\"]}]";
         when(response.getBody()).thenReturn(jsonResponse);
 
         OAuth20Service mockOAuthService = mock(OAuth20Service.class);
@@ -286,12 +299,12 @@ class JiraServiceAccessibleResourcesTest {
         when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
         when(mockOAuthService.execute(any(OAuthRequest.class))).thenReturn(response);
 
-        java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+        java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
         field.setAccessible(true);
         field.set(jiraService, mockOAuthService);
 
         // Act
-        JiraService.AccessibleResources result = jiraService.getAccessibleResources();
+        AccessibleResource result = jiraService.getAccessibleResources();
 
         // Assert
         assertNotNull(result);
@@ -304,8 +317,11 @@ class JiraServiceAccessibleResourcesTest {
         // Arrange
         when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
         when(jiraAttributes.getClientId()).thenReturn("test-client-id");
+        when(jiraAttributes.getEffectiveClientId()).thenReturn("test-client-id");
         when(jiraAttributes.getClientSecret()).thenReturn("test-client-secret");
-        when(sessionManager.getRefToken("test-account-id#test-invoker-id")).thenReturn("refresh-token");
+        when(jiraAttributes.getEffectiveClientSecret()).thenReturn("test-client-secret");
+        when(sessionManager.get("test-client-id#test-client-secret#test-invoker-id"))
+                .thenReturn("refresh-token");
 
         OAuth2AccessToken accessToken = mock(OAuth2AccessToken.class);
         when(accessToken.getRefreshToken()).thenReturn("new-refresh-token");
@@ -322,14 +338,13 @@ class JiraServiceAccessibleResourcesTest {
         when(mockOAuthService.refreshAccessToken("refresh-token")).thenReturn(accessToken);
         when(mockOAuthService.execute(any(OAuthRequest.class))).thenReturn(response);
 
-        java.lang.reflect.Field field = JiraService.class.getDeclaredField("oAuthService");
+        java.lang.reflect.Field field = AbstractAtlassianOAuthService.class.getDeclaredField("oAuthService");
         field.setAccessible(true);
         field.set(jiraService, mockOAuthService);
 
         // Act & Assert
-        IllegalStateException exception = assertThrows(IllegalStateException.class, () ->
-                jiraService.getAccessibleResources()
-        );
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> jiraService.getAccessibleResources());
         assertTrue(exception.getMessage().contains("None of the accessible resources has all the scopes"));
     }
 }

@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
@@ -21,12 +21,19 @@ package app.krista.extensions.devsecops.development.jira.authentication;
 import app.krista.extension.executor.Invoker;
 import app.krista.extensions.devsecops.development.jira.JiraAttributes;
 import app.krista.ksdk.context.RequestContext;
+import app.krista.sdk.atlassian.oauth.ClientCredentialsTokenProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedConstruction;
 
+import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -50,151 +57,290 @@ class RestClientFactoryTest {
         restClientFactory = new RestClientFactory(jiraAttributes, oAuth2RestClient, requestContext, invoker);
     }
 
-    @Test
-    @DisplayName("Should return OAuth2RestClient when basic credentials not present")
-    void testGetInstance_ReturnsOAuth2Client_WhenNoBasicCredentials() {
-        // Arrange
-        when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(false);
+    // ── Annotations & structure ─────────────────────────────────────────
 
-        // Act
-        RestClient result = restClientFactory.getInstance(false);
+    @Nested
+    @DisplayName("Class structure")
+    class ClassStructureTests {
 
-        // Assert
-        assertNotNull(result);
-        assertSame(oAuth2RestClient, result);
-        verify(jiraAttributes).areBasicCredentialsPresent();
+        @Test
+        @DisplayName("Has @Service annotation")
+        void hasServiceAnnotation() {
+            assertTrue(RestClientFactory.class.isAnnotationPresent(org.jvnet.hk2.annotations.Service.class));
+        }
+
+        @Test
+        @DisplayName("Has @Inject annotation on constructor")
+        void hasInjectAnnotation() throws NoSuchMethodException {
+            var constructor = RestClientFactory.class.getConstructor(
+                    JiraAttributes.class, OAuth2RestClient.class, RequestContext.class, Invoker.class);
+            assertTrue(constructor.isAnnotationPresent(javax.inject.Inject.class));
+        }
     }
 
-    @Test
-    @DisplayName("Should return OAuth2RestClient when invokeAsUser is true")
-    void testGetInstance_ReturnsOAuth2Client_WhenInvokeAsUser() {
-        // Arrange
-        when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(true);
+    // ── invokeAsUser() ──────────────────────────────────────────────────
 
-        // Act
-        RestClient result = restClientFactory.getInstance(true);
+    @Nested
+    @DisplayName("invokeAsUser")
+    class InvokeAsUserTests {
 
-        // Assert
-        assertNotNull(result);
-        assertSame(oAuth2RestClient, result);
+        @Test
+        @DisplayName("Delegates to RequestContext and returns true")
+        void returnsTrue() {
+            when(requestContext.invokeAsUser()).thenReturn(true);
+            assertTrue(restClientFactory.invokeAsUser());
+            verify(requestContext).invokeAsUser();
+        }
+
+        @Test
+        @DisplayName("Delegates to RequestContext and returns false")
+        void returnsFalse() {
+            when(requestContext.invokeAsUser()).thenReturn(false);
+            assertFalse(restClientFactory.invokeAsUser());
+            verify(requestContext).invokeAsUser();
+        }
     }
 
-    @Test
-    @DisplayName("Should return AuthRestClient when basic credentials present and not invokeAsUser")
-    void testGetInstance_ReturnsAuthClient_WhenBasicCredentialsPresent() {
-        // Arrange
-        when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(true);
-        Map<String, Object> attributes = new HashMap<>();
-        attributes.put("userName", "testUser");
-        attributes.put("authToken", "testToken");
-        attributes.put("hostUrl", "https://test.atlassian.net");
-        when(invoker.getAttributes()).thenReturn(attributes);
+    // ── getInstance(boolean) — early OAuth return ───────────────────────
 
-        // Act
-        RestClient result = restClientFactory.getInstance(false);
+    @Nested
+    @DisplayName("getInstance — invokeAsUser + OAuth early return")
+    class GetInstanceOAuthEarlyReturnTests {
 
-        // Assert
-        assertNotNull(result);
-        assertTrue(result instanceof AuthRestClient);
-        verify(jiraAttributes).areBasicCredentialsPresent();
-        verify(invoker).getAttributes();
+        @Test
+        @DisplayName("Returns oAuth2RestClient when invokeAsUser=true AND OAuth present")
+        void invokeAsUserTrue_oauthPresent_returnsOAuth() {
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+
+            RestClient result = restClientFactory.getInstance(true);
+
+            assertSame(oAuth2RestClient, result);
+        }
+
+        @Test
+        @DisplayName("Falls through when invokeAsUser=true BUT OAuth NOT present")
+        void invokeAsUserTrue_oauthAbsent_fallsThrough() {
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(false);
+            when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(true);
+            when(invoker.getAttributes()).thenReturn(new HashMap<>());
+
+            RestClient result = restClientFactory.getInstance(true);
+
+            assertInstanceOf(AuthRestClient.class, result);
+        }
+
+        @Test
+        @DisplayName("Falls through when invokeAsUser=false regardless of OAuth")
+        void invokeAsUserFalse_fallsThrough() {
+            when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(true);
+            when(invoker.getAttributes()).thenReturn(new HashMap<>());
+
+            RestClient result = restClientFactory.getInstance(false);
+
+            assertInstanceOf(AuthRestClient.class, result);
+        }
     }
 
-    @Test
-    @DisplayName("Should use RequestContext.invokeAsUser when no parameter provided")
-    void testGetInstance_UsesRequestContext() {
-        // Arrange
-        when(requestContext.invokeAsUser()).thenReturn(false);
-        when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(false);
+    // ── getInstance(boolean) — RestClientSelector paths ─────────────────
 
-        // Act
-        RestClient result = restClientFactory.getInstance();
+    @Nested
+    @DisplayName("getInstance — RestClientSelector paths")
+    class GetInstanceSelectorTests {
 
-        // Assert
-        assertNotNull(result);
-        assertSame(oAuth2RestClient, result);
-        verify(requestContext).invokeAsUser();
+        @Test
+        @DisplayName("Basic credentials present → AuthRestClient")
+        void basicCredentials_returnsAuthClient() {
+            when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(true);
+            Map<String, Object> attrs = new HashMap<>();
+            attrs.put("userName", "testUser");
+            attrs.put("authToken", "testToken");
+            attrs.put("hostUrl", "https://test.atlassian.net");
+            when(invoker.getAttributes()).thenReturn(attrs);
+
+            RestClient result = restClientFactory.getInstance(false);
+
+            assertInstanceOf(AuthRestClient.class, result);
+            verify(invoker, atLeastOnce()).getAttributes();
+        }
+
+        @Test
+        @DisplayName("No basic creds + OAuth present → oAuth2RestClient")
+        void noBasicCreds_oauthPresent_returnsOAuth() {
+            when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(false);
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+
+            RestClient result = restClientFactory.getInstance(false);
+
+            assertSame(oAuth2RestClient, result);
+        }
+
+        @Test
+        @DisplayName("No basic creds + no OAuth → throws IllegalStateException")
+        void noCredentials_throws() {
+            when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(false);
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(false);
+
+            assertThrows(IllegalStateException.class, () ->
+                    restClientFactory.getInstance(false));
+        }
+
+        @Test
+        @DisplayName("Creates new AuthRestClient on each call")
+        void createsNewAuthClientEachTime() {
+            when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(true);
+            when(invoker.getAttributes()).thenReturn(new HashMap<>());
+
+            RestClient r1 = restClientFactory.getInstance(false);
+            RestClient r2 = restClientFactory.getInstance(false);
+
+            assertNotSame(r1, r2);
+        }
+
+        @Test
+        @DisplayName("Returns same oAuth2RestClient each time")
+        void returnsSameOAuthInstance() {
+            when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(false);
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+
+            RestClient r1 = restClientFactory.getInstance(false);
+            RestClient r2 = restClientFactory.getInstance(false);
+
+            assertSame(r1, r2);
+            assertSame(oAuth2RestClient, r1);
+        }
     }
 
-    @Test
-    @DisplayName("Should return invokeAsUser from RequestContext")
-    void testInvokeAsUser_ReturnsFromRequestContext() {
-        // Arrange
-        when(requestContext.invokeAsUser()).thenReturn(true);
+    // ── getInstance(boolean) — service account mode ─────────────────────
 
-        // Act
-        boolean result = restClientFactory.invokeAsUser();
+    @Nested
+    @DisplayName("getInstance — service account mode")
+    class ServiceAccountModeTests {
 
-        // Assert
-        assertTrue(result);
-        verify(requestContext).invokeAsUser();
+        @Test
+        @DisplayName("Service account mode creates OAuth2RestClient via ClientCredentialsTokenProvider")
+        void serviceAccountMode_createsClient() {
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+            when(jiraAttributes.isServiceAccountModeEnabled()).thenReturn(true);
+
+            try (MockedConstruction<ClientCredentialsTokenProvider> providerMock =
+                         mockConstruction(ClientCredentialsTokenProvider.class)) {
+                RestClient result = restClientFactory.getInstance(false);
+
+                assertNotNull(result);
+                assertInstanceOf(OAuth2RestClient.class, result);
+                // Verify ClientCredentialsTokenProvider was constructed with jiraAttributes
+                assertEquals(1, providerMock.constructed().size());
+            }
+        }
+
+        @Test
+        @DisplayName("Service account client is cached on subsequent calls")
+        void serviceAccountClient_cachedOnSecondCall() {
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+            when(jiraAttributes.isServiceAccountModeEnabled()).thenReturn(true);
+
+            try (MockedConstruction<ClientCredentialsTokenProvider> providerMock =
+                         mockConstruction(ClientCredentialsTokenProvider.class)) {
+                RestClient r1 = restClientFactory.getInstance(false);
+                RestClient r2 = restClientFactory.getInstance(false);
+
+                assertSame(r1, r2);
+                // ClientCredentialsTokenProvider should only be constructed once
+                assertEquals(1, providerMock.constructed().size());
+            }
+        }
+
+        @Test
+        @DisplayName("Double-checked locking outer null check — pre-set field skips creation")
+        void outerNullCheck_fieldAlreadySet() throws Exception {
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+            when(jiraAttributes.isServiceAccountModeEnabled()).thenReturn(true);
+
+            // Pre-set the volatile serviceAccountClient field via reflection
+            OAuth2RestClient preExisting = mock(OAuth2RestClient.class);
+            Field field = RestClientFactory.class.getDeclaredField("serviceAccountClient");
+            field.setAccessible(true);
+            field.set(restClientFactory, preExisting);
+
+            RestClient result = restClientFactory.getInstance(false);
+
+            // Should return the pre-set client without constructing a new one
+            assertSame(preExisting, result);
+        }
+
+        @Test
+        @DisplayName("Double-checked locking inner null check — concurrent threads exercise race condition")
+        void innerNullCheck_concurrentAccess() throws Exception {
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
+            when(jiraAttributes.isServiceAccountModeEnabled()).thenReturn(true);
+
+            int threadCount = 50;
+            CountDownLatch startGate = new CountDownLatch(1);
+            CountDownLatch finishGate = new CountDownLatch(threadCount);
+            ConcurrentLinkedQueue<RestClient> results = new ConcurrentLinkedQueue<>();
+
+            try (MockedConstruction<ClientCredentialsTokenProvider> providerMock = mockConstruction(
+                    ClientCredentialsTokenProvider.class, (mock, context) -> {
+                        // Slow down construction to widen the race window so multiple
+                        // threads pass the outer null check before the first completes
+                        Thread.sleep(50);
+                    })) {
+                for (int i = 0; i < threadCount; i++) {
+                    new Thread(() -> {
+                        try {
+                            startGate.await();
+                            results.add(restClientFactory.getInstance(false));
+                        } catch (Exception e) {
+                            // ignore
+                        } finally {
+                            finishGate.countDown();
+                        }
+                    }).start();
+                }
+
+                startGate.countDown();
+                assertTrue(finishGate.await(30, TimeUnit.SECONDS), "All threads should complete");
+            }
+
+            // Double-checked locking guarantees all threads get the same instance
+            RestClient first = results.peek();
+            assertNotNull(first);
+            for (RestClient r : results) {
+                assertSame(first, r);
+            }
+        }
     }
 
-    @Test
-    @DisplayName("Should return false when RequestContext.invokeAsUser is false")
-    void testInvokeAsUser_ReturnsFalse() {
-        // Arrange
-        when(requestContext.invokeAsUser()).thenReturn(false);
+    // ── getInstance() — no-arg overload ─────────────────────────────────
 
-        // Act
-        boolean result = restClientFactory.invokeAsUser();
+    @Nested
+    @DisplayName("getInstance — no-arg overload")
+    class GetInstanceNoArgTests {
 
-        // Assert
-        assertFalse(result);
-        verify(requestContext).invokeAsUser();
-    }
+        @Test
+        @DisplayName("Delegates to getInstance(boolean) using requestContext.invokeAsUser()")
+        void delegatesToBooleanOverload() {
+            when(requestContext.invokeAsUser()).thenReturn(false);
+            when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(false);
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
 
-    @Test
-    @DisplayName("Should have Service annotation")
-    void testHasServiceAnnotation() {
-        // Assert
-        assertTrue(RestClientFactory.class.isAnnotationPresent(org.jvnet.hk2.annotations.Service.class));
-    }
+            RestClient result = restClientFactory.getInstance();
 
-    @Test
-    @DisplayName("Should have Inject annotation on constructor")
-    void testHasInjectAnnotation() throws NoSuchMethodException {
-        // Act
-        var constructor = RestClientFactory.class.getConstructor(
-                JiraAttributes.class, OAuth2RestClient.class, RequestContext.class, Invoker.class);
+            assertSame(oAuth2RestClient, result);
+            verify(requestContext).invokeAsUser();
+        }
 
-        // Assert
-        assertTrue(constructor.isAnnotationPresent(javax.inject.Inject.class));
-    }
+        @Test
+        @DisplayName("Passes invokeAsUser=true from RequestContext")
+        void passesInvokeAsUserTrue() {
+            when(requestContext.invokeAsUser()).thenReturn(true);
+            when(jiraAttributes.areOAuthCredentialsPresent()).thenReturn(true);
 
-    @Test
-    @DisplayName("Should create new AuthRestClient instance each time")
-    void testGetInstance_CreatesNewAuthClientEachTime() {
-        // Arrange
-        when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(true);
-        Map<String, Object> attributes = new HashMap<>();
-        attributes.put("userName", "testUser");
-        attributes.put("authToken", "testToken");
-        attributes.put("hostUrl", "https://test.atlassian.net");
-        when(invoker.getAttributes()).thenReturn(attributes);
+            RestClient result = restClientFactory.getInstance();
 
-        // Act
-        RestClient result1 = restClientFactory.getInstance(false);
-        RestClient result2 = restClientFactory.getInstance(false);
-
-        // Assert
-        assertNotNull(result1);
-        assertNotNull(result2);
-        assertNotSame(result1, result2, "Should create new AuthRestClient instances");
-    }
-
-    @Test
-    @DisplayName("Should return same OAuth2RestClient instance")
-    void testGetInstance_ReturnsSameOAuth2ClientInstance() {
-        // Arrange
-        when(jiraAttributes.areBasicCredentialsPresent()).thenReturn(false);
-
-        // Act
-        RestClient result1 = restClientFactory.getInstance(false);
-        RestClient result2 = restClientFactory.getInstance(false);
-
-        // Assert
-        assertSame(result1, result2);
-        assertSame(oAuth2RestClient, result1);
+            // invokeAsUser=true + OAuth present → early return of oAuth2RestClient
+            assertSame(oAuth2RestClient, result);
+            verify(requestContext).invokeAsUser();
+        }
     }
 }

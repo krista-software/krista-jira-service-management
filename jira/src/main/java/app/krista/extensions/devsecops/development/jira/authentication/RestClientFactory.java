@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>. 
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package app.krista.extensions.devsecops.development.jira.authentication;
@@ -21,10 +21,20 @@ package app.krista.extensions.devsecops.development.jira.authentication;
 import app.krista.extension.executor.Invoker;
 import app.krista.extensions.devsecops.development.jira.JiraAttributes;
 import app.krista.ksdk.context.RequestContext;
+import app.krista.sdk.atlassian.client.RestClientSelector;
+import app.krista.sdk.atlassian.oauth.ClientCredentialsTokenProvider;
 import org.jvnet.hk2.annotations.Service;
 
 import javax.inject.Inject;
 
+/**
+ * Selects the REST client implementation matching the configured credentials.
+ *
+ * <p>Selection is delegated to the SDK's {@link RestClientSelector}, which
+ * encodes the corrected rule (basic auth when fully configured, OAuth when
+ * its credentials are present, configuration error otherwise) instead of the
+ * previous silent fall-through to OAuth.</p>
+ */
 @Service
 public class RestClientFactory {
 
@@ -32,6 +42,9 @@ public class RestClientFactory {
     private final OAuth2RestClient oAuth2RestClient;
     private final RequestContext requestContext;
     private final Invoker invoker;
+
+    /** Lazily created 2LO client — cached so the provider's token cache survives across requests. */
+    private volatile OAuth2RestClient serviceAccountClient;
 
     @Inject
     public RestClientFactory(JiraAttributes jiraAttributes, OAuth2RestClient oAuth2RestClient,
@@ -47,20 +60,34 @@ public class RestClientFactory {
     }
 
     public RestClient getInstance(boolean invokeAsUser) {
-        RestClient restClient;
-        if (jiraAttributes.areBasicCredentialsPresent() && !invokeAsUser) {
-            System.out.println("Auth Rest Client created");
-            restClient = new AuthRestClient(invoker.getAttributes(), false, false);
-        } else {
-            System.out.println("OAuth Rest Client created");
-            restClient = oAuth2RestClient;
+        // When per-user auth is required and OAuth credentials are available,
+        // force OAuth 2.0 (3LO) so the user-specific token lookup can trigger
+        // MustAuthorizeException when the MCP user hasn't authenticated yet.
+        if (invokeAsUser && jiraAttributes.areOAuthCredentialsPresent()) {
+            return oAuth2RestClient;
         }
-        return restClient;
+        return RestClientSelector.select(jiraAttributes,
+                jiraAttributes.isServiceAccountModeEnabled(),
+                () -> new AuthRestClient(invoker.getAttributes(), invokeAsUser, false),
+                this::serviceAccountClient,
+                () -> oAuth2RestClient);
+    }
+
+    /** 2LO (service-account) client over the client-credentials token provider. */
+    private OAuth2RestClient serviceAccountClient() {
+        OAuth2RestClient client = serviceAccountClient;
+        if (client == null) {
+            synchronized (this) {
+                if (serviceAccountClient == null) {
+                    serviceAccountClient = new OAuth2RestClient(new ClientCredentialsTokenProvider(jiraAttributes));
+                }
+                client = serviceAccountClient;
+            }
+        }
+        return client;
     }
 
     public RestClient getInstance() {
         return getInstance(requestContext.invokeAsUser());
     }
-
-
 }
